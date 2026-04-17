@@ -11,6 +11,8 @@
       --text: #c0caf5;
       --muted: #565f89;
       --accent: #7aa2f7;
+      --user-bubble: #414868;
+      --model-bubble: #1f2335;
     }
     * { box-sizing: border-box; }
     body {
@@ -19,15 +21,33 @@
       font-family: system-ui, Segoe UI, sans-serif;
       background: var(--bg);
       color: var(--text);
+      padding: 1rem;
+    }
+    .app {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.25rem;
+      align-items: flex-start;
+      justify-content: center;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .main-column {
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 1rem;
       gap: 1rem;
+      flex: 1 1 520px;
+      min-width: 280px;
     }
     h1 {
       margin: 0;
       font-size: 1.25rem;
+      font-weight: 600;
+    }
+    h2 {
+      margin: 0 0 0.5rem;
+      font-size: 1rem;
       font-weight: 600;
     }
     .toolbar {
@@ -38,7 +58,9 @@
       background: var(--panel);
       padding: 0.75rem 1rem;
       border-radius: 10px;
-      max-width: min(100%, 900px);
+      width: 100%;
+      max-width: 900px;
+      justify-content: center;
     }
     .toolbar label {
       display: flex;
@@ -55,18 +77,29 @@
       padding: 0;
       background: transparent;
     }
-    input[type="text"] {
-      width: 8rem;
+    input[type="text"],
+    input[type="password"] {
       padding: 0.45rem 0.6rem;
       border: 1px solid var(--muted);
       border-radius: 6px;
       background: var(--bg);
       color: var(--text);
-      font-family: ui-monospace, monospace;
       font-size: 0.85rem;
+    }
+    input[type="text"]#colorHex {
+      width: 8rem;
+      font-family: ui-monospace, monospace;
     }
     input[type="text"]:invalid {
       border-color: #f7768e;
+    }
+    select {
+      padding: 0.45rem 0.5rem;
+      border-radius: 6px;
+      border: 1px solid var(--muted);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.85rem;
     }
     button {
       padding: 0.45rem 0.9rem;
@@ -78,7 +111,11 @@
       cursor: pointer;
       font-size: 0.875rem;
     }
-    button:hover { filter: brightness(1.08); }
+    button:hover:not(:disabled) { filter: brightness(1.08); }
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
     button.secondary {
       background: var(--muted);
       color: var(--text);
@@ -86,7 +123,7 @@
     .hint {
       font-size: 0.75rem;
       color: var(--muted);
-      max-width: min(100%, 900px);
+      max-width: 900px;
       text-align: center;
     }
     .canvas-wrap {
@@ -103,31 +140,177 @@
       max-width: 100%;
       height: auto;
     }
+    .ai-panel {
+      flex: 0 1 380px;
+      width: 100%;
+      max-width: 420px;
+      background: var(--panel);
+      border-radius: 12px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .ai-panel label.field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .ai-panel input[type="password"],
+    .ai-panel input[type="text"].wide {
+      width: 100%;
+    }
+    .row-btns {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    textarea {
+      width: 100%;
+      min-height: 4.5rem;
+      padding: 0.5rem 0.6rem;
+      border-radius: 8px;
+      border: 1px solid var(--muted);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.875rem;
+      resize: vertical;
+      font-family: inherit;
+    }
+    #chatInput { min-height: 3rem; }
+    .chat-log {
+      flex: 1;
+      min-height: 200px;
+      max-height: 320px;
+      overflow-y: auto;
+      border: 1px solid var(--muted);
+      border-radius: 8px;
+      padding: 0.5rem;
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .bubble {
+      padding: 0.5rem 0.65rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .bubble.user {
+      align-self: flex-end;
+      background: var(--user-bubble);
+      max-width: 95%;
+    }
+    .bubble.model {
+      align-self: flex-start;
+      background: var(--model-bubble);
+      border: 1px solid #3b4261;
+      max-width: 95%;
+    }
+    .bubble.meta {
+      align-self: center;
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+    .bubble.error {
+      align-self: stretch;
+      background: #3f2d3a;
+      color: #f7768e;
+      border: 1px solid #f7768e;
+    }
+    .chat-actions {
+      display: flex;
+      gap: 0.5rem;
+      align-items: flex-start;
+    }
+    .chat-actions textarea { flex: 1; }
+    .note {
+      font-size: 0.7rem;
+      color: var(--muted);
+      line-height: 1.4;
+      margin: 0;
+    }
   </style>
 </head>
 <body>
-  <h1>100×100 pixel grid</h1>
-  <div class="toolbar">
-    <label>
-      Swatch
-      <input type="color" id="colorPicker" value="#7aa2f7" />
-    </label>
-    <label>
-      HTML color
-      <input type="text" id="colorHex" value="#7aa2f7" spellcheck="false" maxlength="64" placeholder="#rgb or name" />
-    </label>
-    <button type="button" id="btnClear">Clear</button>
-    <button type="button" class="secondary" id="btnGrid">Toggle grid</button>
-  </div>
-  <p class="hint">Click and drag to paint. Any valid CSS color works in the text field (hex, <code>rgb()</code>, named colors).</p>
-  <div class="canvas-wrap">
-    <canvas id="board" width="800" height="800" aria-label="100 by 100 paint grid"></canvas>
+  <div class="app">
+    <div class="main-column">
+      <h1>100×100 pixel grid</h1>
+      <div class="toolbar">
+        <label>
+          Swatch
+          <input type="color" id="colorPicker" value="#7aa2f7" />
+        </label>
+        <label>
+          HTML color
+          <input type="text" id="colorHex" value="#7aa2f7" spellcheck="false" maxlength="64" placeholder="#rgb or name" />
+        </label>
+        <button type="button" id="btnClear">Clear</button>
+        <button type="button" class="secondary" id="btnGrid">Toggle grid</button>
+        <button type="button" class="secondary" id="btnExportJson">Download JSON</button>
+      </div>
+      <p class="hint">Click and drag to paint. Use the AI panel to chat with Gemini or generate a 100×100 color grid from a description.</p>
+      <div class="canvas-wrap">
+        <canvas id="board" width="800" height="800" aria-label="100 by 100 paint grid"></canvas>
+      </div>
+    </div>
+
+    <aside class="ai-panel" aria-label="Gemini AI">
+      <h2>Gemini</h2>
+      <label class="field">
+        API key (stored only in this browser)
+        <input type="password" id="apiKey" class="wide" autocomplete="off" placeholder="AI Studio API key" />
+      </label>
+      <label class="field">
+        Model
+        <select id="modelId">
+          <option value="gemini-2.0-flash" selected>gemini-2.0-flash</option>
+          <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite</option>
+          <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+          <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+        </select>
+      </label>
+      <div class="row-btns">
+        <button type="button" class="secondary" id="btnSaveKey">Save key</button>
+      </div>
+
+      <label class="field" style="color: var(--text); font-weight: 600;">Picture for grid</label>
+      <textarea id="picturePrompt" placeholder="E.g. sunset over mountains, low-res pixel style, centered…"></textarea>
+      <button type="button" id="btnDrawAI">Draw on grid (JSON)</button>
+
+      <label class="field" style="color: var(--text); font-weight: 600; margin-top: 0.25rem;">Chat</label>
+      <div class="chat-log" id="chatLog" aria-live="polite"></div>
+      <div class="chat-actions">
+        <textarea id="chatInput" placeholder="Message Gemini…" rows="2"></textarea>
+        <button type="button" id="btnChatSend">Send</button>
+      </div>
+      <button type="button" class="secondary" id="btnClearChat">Clear chat</button>
+      <p class="note">Grid generation asks Gemini for a single JSON object <code>{"rows":[[ "#rrggbb", …×100 ], …×100 ]}</code>. Large outputs need a capable model; if the response is cut off, try a simpler scene or another model.</p>
+    </aside>
   </div>
 
   <script>
     const GRID = 100;
     const CANVAS_SIZE = 800;
     const CELL = CANVAS_SIZE / GRID;
+    const STORAGE_KEY = 'pixelengine_gemini_api_key';
+    const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+    const GRID_JSON_INSTRUCTION = `You are assigning one HTML/CSS color per cell of a ${GRID}×${GRID} pixel canvas.
+Respond with ONLY valid JSON (no markdown fences, no commentary). Shape:
+{"rows":[[ "#rrggbb", ... ], ... ]}
+Rules:
+- "rows" must be an array of exactly ${GRID} arrays.
+- Each inner array must have exactly ${GRID} strings.
+- Each string must be a six-digit lowercase hex color like "#e0a040".
+- Row index 0 is the top of the image; within a row, index 0 is the left.`;
 
     const canvas = document.getElementById('board');
     const ctx = canvas.getContext('2d', { alpha: false });
@@ -135,16 +318,30 @@
     const colorHex = document.getElementById('colorHex');
     const btnClear = document.getElementById('btnClear');
     const btnGrid = document.getElementById('btnGrid');
+    const btnExportJson = document.getElementById('btnExportJson');
+    const apiKeyInput = document.getElementById('apiKey');
+    const modelId = document.getElementById('modelId');
+    const btnSaveKey = document.getElementById('btnSaveKey');
+    const picturePrompt = document.getElementById('picturePrompt');
+    const btnDrawAI = document.getElementById('btnDrawAI');
+    const chatLog = document.getElementById('chatLog');
+    const chatInput = document.getElementById('chatInput');
+    const btnChatSend = document.getElementById('btnChatSend');
+    const btnClearChat = document.getElementById('btnClearChat');
 
     /** @type {string[][]} */
     const cells = Array.from({ length: GRID }, () =>
       Array.from({ length: GRID }, () => '#ffffff')
     );
 
+    /** @type {{ role: 'user' | 'model', text: string }[]} */
+    let chatTurns = [];
+
     let showGrid = false;
     let painting = false;
     let currentColor = '#7aa2f7';
     let gridRedrawPending = false;
+    let geminiBusy = false;
 
     function scheduleGridRedraw() {
       if (gridRedrawPending) return;
@@ -156,12 +353,18 @@
     }
 
     function isValidCssColor(str) {
-      const s = str.trim();
+      const s = String(str).trim();
       if (!s) return false;
       const probe = document.createElement('span');
       probe.style.color = '';
       probe.style.color = s;
       return probe.style.color !== '';
+    }
+
+    function normalizeCellColor(raw) {
+      const s = String(raw).trim();
+      if (isValidCssColor(s)) return s;
+      return '#e0e0e0';
     }
 
     function syncColorFromText() {
@@ -186,7 +389,7 @@
           const b = (+m[3]).toString(16).padStart(2, '0');
           colorPicker.value = `#${r}${g}${b}`;
         }
-      } catch (_) { /* keep picker as-is */ }
+      } catch (_) { /* keep picker */ }
     }
 
     function syncTextFromPicker() {
@@ -245,6 +448,191 @@
       }
     }
 
+    function getApiKey() {
+      return apiKeyInput.value.trim();
+    }
+
+    function loadStoredKey() {
+      try {
+        const k = localStorage.getItem(STORAGE_KEY);
+        if (k) apiKeyInput.value = k;
+      } catch (_) { /* private mode */ }
+    }
+
+    function saveStoredKey() {
+      const k = getApiKey();
+      try {
+        if (k) localStorage.setItem(STORAGE_KEY, k);
+        else localStorage.removeItem(STORAGE_KEY);
+      } catch (_) { /* ignore */ }
+      appendChatBubble('meta', k ? 'API key saved in this browser.' : 'API key cleared from storage.');
+    }
+
+    function appendChatBubble(kind, text) {
+      const el = document.createElement('div');
+      el.className = 'bubble ' + kind;
+      el.textContent = text;
+      chatLog.appendChild(el);
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    function contentsForChat() {
+      return chatTurns.map((t) => ({
+        role: t.role,
+        parts: [{ text: t.text }],
+      }));
+    }
+
+    function parseModelJsonText(text) {
+      let t = String(text).trim();
+      if (t.startsWith('```')) {
+        t = t.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '');
+      }
+      return JSON.parse(t);
+    }
+
+    function applyRowsToGrid(rows) {
+      if (!Array.isArray(rows) || rows.length !== GRID) {
+        throw new Error(`Expected "rows" to have ${GRID} arrays, got ${Array.isArray(rows) ? rows.length : typeof rows}.`);
+      }
+      for (let y = 0; y < GRID; y++) {
+        const r = rows[y];
+        if (!Array.isArray(r) || r.length !== GRID) {
+          throw new Error(`Row ${y} must be an array of ${GRID} colors.`);
+        }
+        for (let x = 0; x < GRID; x++) {
+          cells[y][x] = normalizeCellColor(r[x]);
+        }
+      }
+      draw();
+    }
+
+    function gridToJsonObject() {
+      return { rows: cells.map((row) => [...row]) };
+    }
+
+    function downloadJson(filename, obj) {
+      const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    function readGeminiError(data) {
+      const msg = data?.error?.message || data?.error?.status || JSON.stringify(data?.error || data);
+      return typeof msg === 'string' ? msg : 'Request failed.';
+    }
+
+    function extractCandidateText(data) {
+      const c = data?.candidates?.[0];
+      if (!c) {
+        const fb = data?.promptFeedback;
+        if (fb) throw new Error('Blocked: ' + JSON.stringify(fb));
+        throw new Error('No candidates in response.');
+      }
+      const parts = c.content?.parts || [];
+      const text = parts.map((p) => p.text || '').join('');
+      if (!text) {
+        if (c.finishReason === 'MAX_TOKENS') {
+          throw new Error('Output was truncated (MAX_TOKENS). Try a simpler prompt or another model.');
+        }
+        if (c.finishReason && c.finishReason !== 'STOP') {
+          throw new Error('No text in response (finish: ' + c.finishReason + ').');
+        }
+        throw new Error('Empty model response.');
+      }
+      if (c.finishReason === 'MAX_TOKENS') {
+        console.warn('Gemini finishReason MAX_TOKENS; JSON may be incomplete.');
+      }
+      return text;
+    }
+
+    async function geminiGenerate(contents, generationConfig) {
+      const key = getApiKey();
+      if (!key) throw new Error('Add your Gemini API key first.');
+
+      const model = modelId.value.trim() || 'gemini-2.0-flash';
+      const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+
+      const body = {
+        contents,
+        generationConfig: {
+          temperature: 0.35,
+          maxOutputTokens: 65536,
+          ...generationConfig,
+        },
+      };
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(readGeminiError(data));
+
+      return data;
+    }
+
+    function setBusy(busy) {
+      geminiBusy = busy;
+      btnDrawAI.disabled = busy;
+      btnChatSend.disabled = busy;
+      btnClearChat.disabled = busy;
+    }
+
+    async function onDrawAI() {
+      const desc = picturePrompt.value.trim();
+      if (!desc) {
+        appendChatBubble('error', 'Describe the picture you want on the grid.');
+        return;
+      }
+      setBusy(true);
+      appendChatBubble('meta', 'Generating grid JSON…');
+      try {
+        const userText = `${GRID_JSON_INSTRUCTION}\n\nScene / style to draw:\n${desc}`;
+        const data = await geminiGenerate(
+          [{ role: 'user', parts: [{ text: userText }] }],
+          { responseMimeType: 'application/json' }
+        );
+        const raw = extractCandidateText(data);
+        const parsed = parseModelJsonText(raw);
+        const rows = parsed.rows;
+        applyRowsToGrid(rows);
+        appendChatBubble('meta', 'Grid updated from Gemini JSON. Use “Download JSON” to save the file.');
+      } catch (e) {
+        appendChatBubble('error', e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function onChatSend() {
+      const text = chatInput.value.trim();
+      if (!text) return;
+      chatInput.value = '';
+      appendChatBubble('user', text);
+      setBusy(true);
+      try {
+        const contents = [
+          ...contentsForChat(),
+          { role: 'user', parts: [{ text }] },
+        ];
+        const data = await geminiGenerate(contents, {});
+        const reply = extractCandidateText(data);
+        chatTurns.push({ role: 'user', text });
+        chatTurns.push({ role: 'model', text: reply });
+        appendChatBubble('model', reply);
+      } catch (e) {
+        appendChatBubble('error', e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    }
+
     colorPicker.addEventListener('input', () => {
       syncTextFromPicker();
     });
@@ -270,6 +658,32 @@
       draw();
     });
 
+    btnExportJson.addEventListener('click', () => {
+      downloadJson('pixelengine-grid.json', gridToJsonObject());
+    });
+
+    btnSaveKey.addEventListener('click', saveStoredKey);
+
+    btnDrawAI.addEventListener('click', () => {
+      void onDrawAI();
+    });
+
+    btnChatSend.addEventListener('click', () => {
+      void onChatSend();
+    });
+
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        void onChatSend();
+      }
+    });
+
+    btnClearChat.addEventListener('click', () => {
+      chatTurns = [];
+      chatLog.innerHTML = '';
+    });
+
     canvas.addEventListener('pointerdown', (e) => {
       canvas.setPointerCapture(e.pointerId);
       painting = true;
@@ -292,6 +706,7 @@
       painting = false;
     });
 
+    loadStoredKey();
     syncTextFromPicker();
     draw();
   </script>
