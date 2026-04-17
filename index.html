@@ -255,6 +255,7 @@
         <button type="button" id="btnClear">Clear</button>
         <button type="button" class="secondary" id="btnGrid">Toggle grid</button>
         <button type="button" class="secondary" id="btnExportJson">Download JSON</button>
+        <button type="button" class="secondary" id="btnPurpleSmiley" title="No API—draws in the browser">Purple smiley</button>
       </div>
       <p class="hint">Click and drag to paint. AI “Draw on grid” asks Gemini for a small scene JSON (shapes + colors); the app rasterizes it to 100×100 cells in one request.</p>
       <div class="canvas-wrap">
@@ -288,6 +289,7 @@
       <button type="button" id="btnDrawAI">Draw on grid (1 request)</button>
 
       <label class="field" style="color: var(--text); font-weight: 600; margin-top: 0.25rem;">Chat</label>
+      <p class="note" style="margin: 0 0 0.35rem;">No DALL-E or image URLs—PixelEngine only uses text replies and the scene rasterizer above.</p>
       <div class="chat-log" id="chatLog" aria-live="polite"></div>
       <div class="chat-actions">
         <textarea id="chatInput" placeholder="Message Gemini…" rows="2"></textarea>
@@ -311,6 +313,8 @@
     const GEMINI_FETCH_TIMEOUT_MS = 120000;
 
     const SCENE_SPEC_PROMPT = `You output a drawing PROGRAM as structured JSON for a ${GRID}×${GRID} pixel grid (cells x=0..${GRID - 1} left→right, y=0..${GRID - 1} top→bottom). The user's browser will RASTERIZE this—do NOT output per-cell colors.
+
+Do NOT output fake tool calls (e.g. dalle.text2im), "action" / "action_input" blocks, or image URLs. Do NOT mention DALL-E or external image APIs. Return ONLY the scene JSON below.
 
 Return ONLY valid JSON (no markdown, no commentary). Schema version 1:
 
@@ -336,6 +340,14 @@ Use 6-digit lowercase hex colors. Build the scene with a few to many shapes—en
 User description:
 `;
 
+    const CHAT_SYSTEM_INSTRUCTION = `You are helping PixelEngine: a static web page with a 100×100 paint grid in the browser.
+
+This app does NOT use DALL-E, Midjourney, or any image-generation API. There is no server that creates PNGs. "Draw on grid" sends one JSON "scene" (rectangles, circles, lines) to the client, which rasterizes it to cells. The toolbar has a local "Purple smiley" button with no API.
+
+Never output fake tool JSON (e.g. {"action":"dalle.text2im"}), action_input, or pretend to call external image tools. If asked for a purple smiley, say they can click "Purple smiley" or use "Draw on grid" with a short description, or paint by hand.
+
+Answer concisely in plain language.`;
+
     const canvas = document.getElementById('board');
     const ctx = canvas.getContext('2d', { alpha: false });
     const colorPicker = document.getElementById('colorPicker');
@@ -343,6 +355,7 @@ User description:
     const btnClear = document.getElementById('btnClear');
     const btnGrid = document.getElementById('btnGrid');
     const btnExportJson = document.getElementById('btnExportJson');
+    const btnPurpleSmiley = document.getElementById('btnPurpleSmiley');
     const apiKeyInput = document.getElementById('apiKey');
     const modelId = document.getElementById('modelId');
     const btnSaveKey = document.getElementById('btnSaveKey');
@@ -666,6 +679,28 @@ User description:
       draw();
     }
 
+    /** Classic round smiley: vibrant purple face, black eyes & smile—rendered locally (no Gemini). */
+    function presetPurpleSmiley() {
+      const purple = '#9333ea';
+      const black = '#111111';
+      const draw = [
+        { circle: { cx: 50, cy: 50, r: 36, fill: purple } },
+        { circle: { cx: 40, cy: 44, r: 4, fill: black } },
+        { circle: { cx: 60, cy: 44, r: 4, fill: black } },
+      ];
+      const arcCx = 50;
+      const arcCy = 58;
+      const arcR = 14;
+      for (let i = 0; i <= 20; i++) {
+        const deg = 200 + (i * 140) / 20;
+        const rad = (deg * Math.PI) / 180;
+        const x = arcCx + arcR * Math.cos(rad);
+        const y = arcCy + arcR * Math.sin(rad);
+        draw.push({ circle: { cx: x, cy: y, r: 2.1, fill: black } });
+      }
+      renderSceneFromSpec({ version: 1, background: '#ffffff', draw });
+    }
+
     /** Truncate or pad to GRID columns (pad by repeating the last color). */
     function padColorRowToGrid(r) {
       if (!Array.isArray(r) || r.length === 0) return null;
@@ -893,7 +928,7 @@ User description:
     }
 
     async function geminiGenerate(contents, generationConfig, retryOptions = {}) {
-      const { onRetry } = retryOptions;
+      const { onRetry, systemInstruction } = retryOptions;
       const key = getApiKey();
       if (!key) throw new Error('Add your Gemini API key first.');
 
@@ -908,6 +943,9 @@ User description:
           ...generationConfig,
         },
       };
+      if (systemInstruction && String(systemInstruction).trim()) {
+        body.systemInstruction = { parts: [{ text: String(systemInstruction).trim() }] };
+      }
 
       const maxAttempts = 4;
       let lastMsg = '';
@@ -1004,7 +1042,10 @@ User description:
           ...contentsForChat(),
           { role: 'user', parts: [{ text }] },
         ];
-        const data = await geminiGenerate(contents, {}, geminiRetryNotify());
+        const data = await geminiGenerate(contents, {}, {
+          ...geminiRetryNotify(),
+          systemInstruction: CHAT_SYSTEM_INSTRUCTION,
+        });
         const reply = extractCandidateText(data);
         chatTurns.push({ role: 'user', text });
         chatTurns.push({ role: 'model', text: reply });
@@ -1043,6 +1084,10 @@ User description:
 
     btnExportJson.addEventListener('click', () => {
       downloadJson('pixelengine-grid.json', gridToJsonObject());
+    });
+
+    btnPurpleSmiley.addEventListener('click', () => {
+      presetPurpleSmiley();
     });
 
     btnSaveKey.addEventListener('click', () => {
