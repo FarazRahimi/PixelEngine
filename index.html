@@ -271,9 +271,9 @@
       <label class="field">
         Model
         <select id="modelId">
-          <option value="gemini-2.0-flash" selected>gemini-2.0-flash</option>
+          <option value="gemini-1.5-flash" selected>gemini-1.5-flash</option>
+          <option value="gemini-2.0-flash">gemini-2.0-flash</option>
           <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite</option>
-          <option value="gemini-1.5-flash">gemini-1.5-flash</option>
           <option value="gemini-1.5-pro">gemini-1.5-pro</option>
         </select>
       </label>
@@ -526,15 +526,37 @@ Rules:
       if (!err) return JSON.stringify(data || {}).slice(0, 2000);
       let msg = err.message || err.status || 'Request failed.';
       const details = err.details;
+      let sawQuotaFailure = false;
+      let quotaModel = '';
       if (Array.isArray(details) && details.length) {
-        const bits = details
-          .map((d) => {
-            if (d['@type']?.includes('ErrorInfo') && d.reason) return d.reason + (d.metadata ? ' ' + JSON.stringify(d.metadata) : '');
-            if (typeof d === 'string') return d;
-            return JSON.stringify(d);
-          })
-          .filter(Boolean);
-        if (bits.length) msg += '\n' + bits.join('\n');
+        for (const d of details) {
+          if (d['@type']?.includes('QuotaFailure') && Array.isArray(d.violations)) {
+            sawQuotaFailure = true;
+            const lines = d.violations.map((vi) => {
+              const m = vi.quotaDimensions?.model || '?';
+              if (!quotaModel) quotaModel = m;
+              return `${vi.quotaId || vi.quotaMetric || 'quota'} (model: ${m})`;
+            });
+            if (lines.length) msg += '\n— ' + lines.slice(0, 5).join('\n— ');
+            if (lines.length > 5) msg += '\n— …';
+            break;
+          }
+        }
+        if (!sawQuotaFailure) {
+          const bits = details
+            .map((d) => {
+              if (d['@type']?.includes('Help') || d['@type']?.includes('RetryInfo')) return '';
+              if (d['@type']?.includes('ErrorInfo') && d.reason) return d.reason + (d.metadata ? ' ' + JSON.stringify(d.metadata) : '');
+              if (typeof d === 'string') return d;
+              return '';
+            })
+            .filter(Boolean);
+          if (bits.length) msg += '\n' + bits.join('\n');
+        }
+      }
+      if (sawQuotaFailure || /limit:\s*0/i.test(msg)) {
+        msg +=
+          '\n\nTip: Free-tier quota for this model may be unset (limit 0). Try another model above (e.g. gemini-1.5-flash), or in Google Cloud open APIs → Generative Language API → Quotas for your project.';
       }
       return msg;
     }
@@ -567,7 +589,7 @@ Rules:
       const key = getApiKey();
       if (!key) throw new Error('Add your Gemini API key first.');
 
-      const model = modelId.value.trim() || 'gemini-2.0-flash';
+      const model = modelId.value.trim() || 'gemini-1.5-flash';
       const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
 
       const body = {
