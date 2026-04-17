@@ -256,7 +256,7 @@
         <button type="button" class="secondary" id="btnGrid">Toggle grid</button>
         <button type="button" class="secondary" id="btnExportJson">Download JSON</button>
       </div>
-      <p class="hint">Click and drag to paint. Use the AI panel to chat with Gemini or generate a 100×100 color grid from a description.</p>
+      <p class="hint">Click and drag to paint. AI “Draw on grid” asks Gemini for a small scene JSON (shapes + colors); the app rasterizes it to 100×100 cells in one request.</p>
       <div class="canvas-wrap">
         <canvas id="board" width="800" height="800" aria-label="100 by 100 paint grid"></canvas>
       </div>
@@ -284,8 +284,8 @@
       </div>
 
       <label class="field" style="color: var(--text); font-weight: 600;">Picture for grid</label>
-      <textarea id="picturePrompt" placeholder="E.g. sunset over mountains, low-res pixel style, centered…"></textarea>
-      <button type="button" id="btnDrawAI">Draw on grid (JSON)</button>
+      <textarea id="picturePrompt" placeholder="E.g. sunset over green hills, yellow sun, simple pixel look…"></textarea>
+      <button type="button" id="btnDrawAI">Draw on grid (1 request)</button>
 
       <label class="field" style="color: var(--text); font-weight: 600; margin-top: 0.25rem;">Chat</label>
       <div class="chat-log" id="chatLog" aria-live="polite"></div>
@@ -294,7 +294,7 @@
         <button type="button" id="btnChatSend">Send</button>
       </div>
       <button type="button" class="secondary" id="btnClearChat">Clear chat</button>
-      <p class="note">Draw on grid runs <strong>10 API calls</strong>, each returning <strong>10×100</strong> colors (strips), so the model is not asked for one giant JSON (which often came back empty or truncated).</p>
+      <p class="note"><strong>Draw on grid</strong> uses <strong>one</strong> API call. Gemini returns a small <strong>scene JSON</strong> (background + shapes); this app <strong>renders</strong> it to the 100×100 cells—no giant per-cell array from the model.</p>
       <p class="note">Older IDs like <code>gemini-1.5-flash</code> are removed from the API—use <strong>List models</strong> to see what your key supports. If the API says <strong>quota</strong> with <code>limit: 0</code> on <code>free_tier</code>, try another model, create a key in <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">AI Studio</a>, and ensure the <strong>Generative Language API</strong> is enabled. See <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener">rate limits</a>.</p>
     </aside>
   </div>
@@ -303,9 +303,6 @@
     const GRID = 100;
     const CANVAS_SIZE = 800;
     const CELL = CANVAS_SIZE / GRID;
-    /** One API call outputs this many rows; GRID must be divisible (100 / 10 = 10 strips). */
-    const STRIP_ROWS = 10;
-    const STRIP_COUNT = GRID / STRIP_ROWS;
     const STORAGE_KEY = 'pixelengine_gemini_api_key';
     const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
     /** Always-on-default; resolves to the newest Flash build for your API version. */
@@ -313,33 +310,31 @@
     /** Abort hung Gemini HTTP calls so the UI does not wait forever. */
     const GEMINI_FETCH_TIMEOUT_MS = 120000;
 
-    const GRID_JSON_INSTRUCTION = `You are assigning one HTML/CSS color per cell of a ${GRID}×${GRID} pixel canvas.
-Respond with ONLY valid JSON (no markdown fences, no commentary). Shape:
-{"rows":[[ "#rrggbb", ... ], ... ]}
-Rules:
-- "rows" must be an array of exactly ${GRID} arrays.
-- Each inner array must have exactly ${GRID} strings.
-- Each string must be a six-digit lowercase hex color like "#e0a040".
-- Row index 0 is the top of the image; within a row, index 0 is the left.`;
+    const SCENE_SPEC_PROMPT = `You output a drawing PROGRAM as structured JSON for a ${GRID}×${GRID} pixel grid (cells x=0..${GRID - 1} left→right, y=0..${GRID - 1} top→bottom). The user's browser will RASTERIZE this—do NOT output per-cell colors.
 
-    function stripPrompt(sceneDescription, stripIndex) {
-      const start = stripIndex * STRIP_ROWS;
-      const end = start + STRIP_ROWS - 1;
-      return `You are filling rows ${start}–${end} (inclusive) of a single ${GRID}×${GRID} pixel-art image (${GRID} columns, ${GRID} rows). There are ${STRIP_COUNT} horizontal strips; this is strip ${stripIndex + 1} of ${STRIP_COUNT}.
+Return ONLY valid JSON (no markdown, no commentary). Schema version 1:
 
-Output ONLY valid JSON (no markdown, no commentary). Exact shape:
-{"rows":[ ... exactly ${STRIP_ROWS} arrays ... ]}
+{
+  "version": 1,
+  "background": "#rrggbb",
+  "draw": [ ... ordered drawing operations, later draws on top ... ]
+}
 
-Rules:
-- "rows" must contain exactly ${STRIP_ROWS} arrays (these are global rows ${start} through ${end}, top to bottom). Do not add extra rows.
-- Each inner array must have exactly ${GRID} strings.
-- Each string is a six-digit lowercase hex color: "#rrggbb".
-- Column 0 is left; align visually with a coherent scene across all strips.
-- Invent original pixel colors only—do not quote song lyrics, book passages, or recite recognizable copyrighted text in any field.
+Each element of "draw" is ONE object with exactly one key: "rect" | "circle" | "line".
 
-Scene / style (same intent for every strip):
-${sceneDescription}`;
-    }
+1) "rect": { "x": number, "y": number, "w": number, "h": number, "fill": "#rrggbb" }
+   - Top-left (x,y), width w and height h in cell units. Clip to the grid mentally.
+
+2) "circle": { "cx": number, "cy": number, "r": number, "fill": "#rrggbb" }
+   - Center (cx,cy), radius r in cell units (floats allowed).
+
+3) "line": { "x0": number, "y0": number, "x1": number, "y1": number, "stroke": "#rrggbb", "width": number }
+   - Line from (x0,y0) to (x1,y1). "width" is thickness in cells (integer ≥ 1).
+
+Use 6-digit lowercase hex colors. Build the scene with a few to many shapes—enough to match the description. Original content only (no lyrics/quotes).
+
+User description:
+`;
 
     const canvas = document.getElementById('board');
     const ctx = canvas.getContext('2d', { alpha: false });
@@ -544,11 +539,131 @@ ${sceneDescription}`;
         throw new Error('Missing a "rows" array (or use grid / cells). Got keys: ' + Object.keys(parsed).join(', '));
       }
       if (rows.length === 0) {
-        throw new Error(
-          'Model returned empty "rows" (0 rows). A full 100×100 grid in one reply is often truncated—this app now generates 10 strips of 10 rows each; retry "Draw on grid".'
-        );
+        throw new Error('Model returned empty "rows" array.');
       }
       return rows;
+    }
+
+    function clamp(n, lo, hi) {
+      return Math.max(lo, Math.min(hi, n));
+    }
+
+    function fillDisk(cx, cy, r, fill, cells) {
+      const c = normalizeCellColor(fill);
+      if (!(r > 0)) return;
+      const r2 = r * r;
+      const x0 = clamp(Math.floor(cx - r - 1), 0, GRID - 1);
+      const x1 = clamp(Math.ceil(cx + r + 1), 0, GRID - 1);
+      const y0 = clamp(Math.floor(cy - r - 1), 0, GRID - 1);
+      const y1 = clamp(Math.ceil(cy + r + 1), 0, GRID - 1);
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          const dx = x + 0.5 - cx;
+          const dy = y + 0.5 - cy;
+          if (dx * dx + dy * dy <= r2) cells[y][x] = c;
+        }
+      }
+    }
+
+    function sceneDrawRect(r, cells) {
+      if (!r || typeof r !== 'object') return;
+      const fill = normalizeCellColor(r.fill || '#888888');
+      const rw = Number(r.w);
+      const rh = Number(r.h);
+      if (!(rw > 0) || !(rh > 0)) return;
+      const x0 = clamp(Math.floor(r.x), 0, GRID - 1);
+      const y0 = clamp(Math.floor(r.y), 0, GRID - 1);
+      const x1 = clamp(Math.floor(r.x + rw) - 1, 0, GRID - 1);
+      const y1 = clamp(Math.floor(r.y + rh) - 1, 0, GRID - 1);
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          cells[y][x] = fill;
+        }
+      }
+    }
+
+    function sceneDrawCircle(c, cells) {
+      if (!c || typeof c !== 'object') return;
+      const fill = normalizeCellColor(c.fill || '#888888');
+      const cx = Number(c.cx);
+      const cy = Number(c.cy);
+      const rad = Number(c.r);
+      fillDisk(cx, cy, rad, fill, cells);
+    }
+
+    function bresenhamLine(x0, y0, x1, y1) {
+      const points = [];
+      x0 = Math.round(x0);
+      y0 = Math.round(y0);
+      x1 = Math.round(x1);
+      y1 = Math.round(y1);
+      const dx = Math.abs(x1 - x0);
+      const dy = Math.abs(y1 - y0);
+      const sx = x0 < x1 ? 1 : -1;
+      const sy = y0 < y1 ? 1 : -1;
+      let err = dx - dy;
+      let x = x0;
+      let y = y0;
+      for (;;) {
+        points.push([x, y]);
+        if (x === x1 && y === y1) break;
+        const e2 = 2 * err;
+        if (e2 > -dy) {
+          err -= dy;
+          x += sx;
+        }
+        if (e2 < dx) {
+          err += dx;
+          y += sy;
+        }
+      }
+      return points;
+    }
+
+    function sceneDrawLine(L, cells) {
+      if (!L || typeof L !== 'object') return;
+      const stroke = normalizeCellColor(L.stroke || '#000000');
+      const w = Math.max(1, Math.round(Number(L.width) || 1));
+      const pts = bresenhamLine(L.x0, L.y0, L.x1, L.y1);
+      const rad = w / 2;
+      for (const [px, py] of pts) {
+        fillDisk(px, py, rad, stroke, cells);
+      }
+    }
+
+    function renderSceneFromSpec(spec) {
+      const ver = spec && spec.version;
+      if (ver !== 1 && ver !== '1') {
+        throw new Error('Scene JSON must include "version": 1');
+      }
+      const bg = normalizeCellColor(spec.background ?? '#ffffff');
+      for (let y = 0; y < GRID; y++) {
+        for (let x = 0; x < GRID; x++) {
+          cells[y][x] = bg;
+        }
+      }
+      const ops = spec.draw;
+      if (!Array.isArray(ops)) {
+        throw new Error('Scene must include a "draw" array.');
+      }
+      for (let i = 0; i < ops.length; i++) {
+        const op = ops[i];
+        if (!op || typeof op !== 'object') {
+          throw new Error(`draw[${i}] must be an object.`);
+        }
+        const keys = Object.keys(op);
+        if (keys.length !== 1) {
+          throw new Error(
+            `draw[${i}] must have exactly one key: rect, circle, or line. Got: ${keys.join(', ')}`
+          );
+        }
+        const k = keys[0];
+        if (k === 'rect') sceneDrawRect(op.rect, cells);
+        else if (k === 'circle') sceneDrawCircle(op.circle, cells);
+        else if (k === 'line') sceneDrawLine(op.line, cells);
+        else throw new Error(`Unknown draw key "${k}" at index ${i}`);
+      }
+      draw();
     }
 
     /** Truncate or pad to GRID columns (pad by repeating the last color). */
@@ -560,37 +675,6 @@ ${sceneDescription}`;
         base.push(fill);
       }
       return base;
-    }
-
-    function normalizeColorRow(r, rowLabel) {
-      if (!Array.isArray(r)) {
-        throw new Error(`${rowLabel}: row must be an array of color strings.`);
-      }
-      const padded = padColorRowToGrid(r);
-      if (!padded) {
-        throw new Error(`${rowLabel}: row is empty.`);
-      }
-      return padded;
-    }
-
-    function applyPartialStripRows(rows, startRow) {
-      if (!Array.isArray(rows) || rows.length === 0) {
-        throw new Error(`Strip must be a non-empty "rows" array.`);
-      }
-      const band = rows.length > STRIP_ROWS ? rows.slice(0, STRIP_ROWS) : rows;
-      if (band.length < STRIP_ROWS) {
-        throw new Error(
-          `Strip has only ${rows.length} rows; need at least ${STRIP_ROWS}.`
-        );
-      }
-      for (let dy = 0; dy < STRIP_ROWS; dy++) {
-        const r = normalizeColorRow(band[dy], `Strip row ${dy} (global ${startRow + dy})`);
-        const gy = startRow + dy;
-        for (let x = 0; x < GRID; x++) {
-          cells[gy][x] = normalizeCellColor(r[x]);
-        }
-      }
-      draw();
     }
 
     function applyRowsToGrid(rows) {
@@ -809,7 +893,7 @@ ${sceneDescription}`;
     }
 
     async function geminiGenerate(contents, generationConfig, retryOptions = {}) {
-      const { onRetry, quietRetries } = retryOptions;
+      const { onRetry } = retryOptions;
       const key = getApiKey();
       if (!key) throw new Error('Add your Gemini API key first.');
 
@@ -855,9 +939,7 @@ ${sceneDescription}`;
         }
 
         const delayMs = Math.min(32000, 2000 * Math.pow(2, attempt - 1));
-        if (typeof onRetry === 'function' && !quietRetries) {
-          onRetry(attempt + 1, maxAttempts, delayMs);
-        }
+        if (typeof onRetry === 'function') onRetry(attempt + 1, maxAttempts, delayMs);
         await sleep(delayMs);
       }
 
@@ -872,13 +954,7 @@ ${sceneDescription}`;
             `Model busy (high demand)—retry ${nextAttempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s…`
           );
         },
-        quietRetries: false,
       };
-    }
-
-    /** Same retries as chat, but no extra chat lines (10 strips × retries was spammy). */
-    function geminiRetryQuiet() {
-      return { quietRetries: true };
     }
 
     function setBusy(busy) {
@@ -897,29 +973,18 @@ ${sceneDescription}`;
       }
       if (geminiBusy) return;
       setBusy(true);
-      appendChatBubble('meta', `Generating grid in ${STRIP_COUNT} strips (${STRIP_ROWS} rows each)…`);
+      appendChatBubble('meta', 'Asking Gemini for a scene spec (one request); drawing with built-in rasterizer…');
       try {
-        for (let y = 0; y < GRID; y++) {
-          for (let x = 0; x < GRID; x++) cells[y][x] = '#ffffff';
-        }
-        draw();
-        for (let s = 0; s < STRIP_COUNT; s++) {
-          appendChatBubble(
-            'meta',
-            `Strip ${s + 1}/${STRIP_COUNT} (rows ${s * STRIP_ROWS}–${s * STRIP_ROWS + STRIP_ROWS - 1})…`
-          );
-          const userText = stripPrompt(desc, s);
-          const data = await geminiGenerate(
-            [{ role: 'user', parts: [{ text: userText }] }],
-            { responseMimeType: 'application/json' },
-            geminiRetryQuiet()
-          );
-          const raw = extractCandidateText(data);
-          const parsed = parseModelJsonText(raw);
-          const rows = extractRowsFromParsed(parsed);
-          applyPartialStripRows(rows, s * STRIP_ROWS);
-        }
-        appendChatBubble('meta', 'Grid updated from Gemini JSON. Use “Download JSON” to save the file.');
+        const userText = SCENE_SPEC_PROMPT + desc;
+        const data = await geminiGenerate(
+          [{ role: 'user', parts: [{ text: userText }] }],
+          { responseMimeType: 'application/json' },
+          geminiRetryNotify()
+        );
+        const raw = extractCandidateText(data);
+        const parsed = parseModelJsonText(raw);
+        renderSceneFromSpec(parsed);
+        appendChatBubble('meta', 'Scene rendered. Use “Download JSON” to export the resulting cell colors.');
       } catch (e) {
         appendChatBubble('error', e instanceof Error ? e.message : String(e));
       } finally {
