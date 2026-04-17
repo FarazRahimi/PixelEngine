@@ -570,7 +570,26 @@ Rules:
         msg +=
           '\n\nTip: Free-tier quota for this model may be unset (limit 0). Try another model (use List models), or in Google Cloud open APIs → Generative Language API → Quotas for your project.';
       }
+      if (/high demand|spikes in demand|temporarily overloaded|try again later/i.test(msg)) {
+        msg +=
+          '\n\nTip: This is usually short-lived. Wait a minute, retry, or pick a lighter model (e.g. *-flash-lite). The app will auto-retry a few times when it sees this.';
+      }
       return msg;
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    /** Google sometimes returns 503 or a “high demand” message when capacity is tight. */
+    function isTransientCapacityError(httpStatus, data, message) {
+      const m = (message || '').toLowerCase();
+      if (m.includes('high demand') || m.includes('spikes in demand')) return true;
+      if (m.includes('temporarily') && m.includes('unavailable')) return true;
+      if (httpStatus === 503) return true;
+      const st = data?.error?.status;
+      if (st === 'UNAVAILABLE') return true;
+      return false;
     }
 
     const MODEL_PREFERRED_ORDER = [
@@ -667,7 +686,8 @@ Rules:
       return text;
     }
 
-    async function geminiGenerate(contents, generationConfig) {
+    async function geminiGenerate(contents, generationConfig, retryOptions = {}) {
+      const { onRetry } = retryOptions;
       const key = getApiKey();
       if (!key) throw new Error('Add your Gemini API key first.');
 
@@ -683,16 +703,48 @@ Rules:
         },
       };
 
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const maxAttempts = 4;
+      let lastMsg = '';
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(readGeminiError(data));
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
 
-      return data;
+        const data = await res.json().catch(() => ({}));
+        lastMsg = readGeminiError(data);
+
+        if (res.ok) return data;
+
+        const transient = isTransientCapacityError(res.status, data, lastMsg);
+        if (!transient || attempt === maxAttempts) {
+          throw new Error(
+            lastMsg +
+              (transient && attempt === maxAttempts
+                ? '\n\nStill busy after several retries—wait a bit or switch model.'
+                : '')
+          );
+        }
+
+        const delayMs = Math.min(32000, 2000 * Math.pow(2, attempt - 1));
+        if (typeof onRetry === 'function') onRetry(attempt + 1, maxAttempts, delayMs);
+        await sleep(delayMs);
+      }
+
+      throw new Error(lastMsg || 'Request failed.');
+    }
+
+    function geminiRetryNotify() {
+      return {
+        onRetry(nextAttempt, maxAttempts, delayMs) {
+          appendChatBubble(
+            'meta',
+            `Model busy (high demand)—retry ${nextAttempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s…`
+          );
+        },
+      };
     }
 
     function setBusy(busy) {
@@ -715,7 +767,8 @@ Rules:
         const userText = `${GRID_JSON_INSTRUCTION}\n\nScene / style to draw:\n${desc}`;
         const data = await geminiGenerate(
           [{ role: 'user', parts: [{ text: userText }] }],
-          { responseMimeType: 'application/json' }
+          { responseMimeType: 'application/json' },
+          geminiRetryNotify()
         );
         const raw = extractCandidateText(data);
         const parsed = parseModelJsonText(raw);
@@ -740,7 +793,7 @@ Rules:
           ...contentsForChat(),
           { role: 'user', parts: [{ text }] },
         ];
-        const data = await geminiGenerate(contents, {});
+        const data = await geminiGenerate(contents, {}, geminiRetryNotify());
         const reply = extractCandidateText(data);
         chatTurns.push({ role: 'user', text });
         chatTurns.push({ role: 'model', text: reply });
