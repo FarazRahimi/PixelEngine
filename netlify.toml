@@ -1,0 +1,4 @@
+# Static app: no bundler. Site root is the publish directory.
+[build]
+  publish = "."
+  command = "echo Static site"
