@@ -293,7 +293,7 @@
         <button type="button" id="btnChatSend">Send</button>
       </div>
       <button type="button" class="secondary" id="btnClearChat">Clear chat</button>
-      <p class="note">Grid generation asks Gemini for a single JSON object <code>{"rows":[[ "#rrggbb", …×100 ], …×100 ]}</code>. Large outputs need a capable model; if the response is cut off, try a simpler scene or another model.</p>
+      <p class="note">Draw on grid runs <strong>10 API calls</strong>, each returning <strong>10×100</strong> colors (strips), so the model is not asked for one giant JSON (which often came back empty or truncated).</p>
       <p class="note">Older IDs like <code>gemini-1.5-flash</code> are removed from the API—use <strong>List models</strong> to see what your key supports. If the API says <strong>quota</strong> with <code>limit: 0</code> on <code>free_tier</code>, try another model, create a key in <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">AI Studio</a>, and ensure the <strong>Generative Language API</strong> is enabled. See <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener">rate limits</a>.</p>
     </aside>
   </div>
@@ -302,6 +302,9 @@
     const GRID = 100;
     const CANVAS_SIZE = 800;
     const CELL = CANVAS_SIZE / GRID;
+    /** One API call outputs this many rows; GRID must be divisible (100 / 10 = 10 strips). */
+    const STRIP_ROWS = 10;
+    const STRIP_COUNT = GRID / STRIP_ROWS;
     const STORAGE_KEY = 'pixelengine_gemini_api_key';
     const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -313,6 +316,24 @@ Rules:
 - Each inner array must have exactly ${GRID} strings.
 - Each string must be a six-digit lowercase hex color like "#e0a040".
 - Row index 0 is the top of the image; within a row, index 0 is the left.`;
+
+    function stripPrompt(sceneDescription, stripIndex) {
+      const start = stripIndex * STRIP_ROWS;
+      const end = start + STRIP_ROWS - 1;
+      return `You are filling rows ${start}–${end} (inclusive) of a single ${GRID}×${GRID} pixel-art image (${GRID} columns, ${GRID} rows). There are ${STRIP_COUNT} horizontal strips; this is strip ${stripIndex + 1} of ${STRIP_COUNT}.
+
+Output ONLY valid JSON (no markdown, no commentary). Exact shape:
+{"rows":[ ... exactly ${STRIP_ROWS} arrays ... ]}
+
+Rules:
+- "rows" must contain exactly ${STRIP_ROWS} arrays (these are global rows ${start} through ${end}, top to bottom).
+- Each inner array must have exactly ${GRID} strings.
+- Each string is a six-digit lowercase hex color: "#rrggbb".
+- Column 0 is left; align visually with a coherent scene across all strips.
+
+Scene / style (same intent for every strip):
+${sceneDescription}`;
+    }
 
     const canvas = document.getElementById('board');
     const ctx = canvas.getContext('2d', { alpha: false });
@@ -504,17 +525,59 @@ Rules:
       return JSON.parse(t);
     }
 
+    function extractRowsFromParsed(parsed) {
+      if (parsed == null || typeof parsed !== 'object') {
+        throw new Error('Model JSON must be an object or array.');
+      }
+      let rows = parsed.rows;
+      if (rows == null && Array.isArray(parsed.grid)) rows = parsed.grid;
+      if (rows == null && Array.isArray(parsed.cells)) rows = parsed.cells;
+      if (rows == null && Array.isArray(parsed.pixels)) rows = parsed.pixels;
+      if (rows == null && Array.isArray(parsed)) rows = parsed;
+      if (!Array.isArray(rows)) {
+        throw new Error('Missing a "rows" array (or use grid / cells). Got keys: ' + Object.keys(parsed).join(', '));
+      }
+      if (rows.length === 0) {
+        throw new Error(
+          'Model returned empty "rows" (0 rows). A full 100×100 grid in one reply is often truncated—this app now generates 10 strips of 10 rows each; retry "Draw on grid".'
+        );
+      }
+      return rows;
+    }
+
+    function applyPartialStripRows(rows, startRow) {
+      if (!Array.isArray(rows) || rows.length !== STRIP_ROWS) {
+        throw new Error(
+          `Expected strip to have ${STRIP_ROWS} row arrays, got ${Array.isArray(rows) ? rows.length : typeof rows}.`
+        );
+      }
+      for (let dy = 0; dy < STRIP_ROWS; dy++) {
+        const r = rows[dy];
+        if (!Array.isArray(r) || r.length !== GRID) {
+          throw new Error(`Strip row ${dy} (global row ${startRow + dy}) must be an array of ${GRID} colors.`);
+        }
+        const gy = startRow + dy;
+        for (let x = 0; x < GRID; x++) {
+          cells[gy][x] = normalizeCellColor(r[x]);
+        }
+      }
+      draw();
+    }
+
     function applyRowsToGrid(rows) {
-      if (!Array.isArray(rows) || rows.length !== GRID) {
-        throw new Error(`Expected "rows" to have ${GRID} arrays, got ${Array.isArray(rows) ? rows.length : typeof rows}.`);
+      const r = Array.isArray(rows) ? rows : extractRowsFromParsed(rows);
+      if (!Array.isArray(r) || r.length !== GRID) {
+        throw new Error(
+          `Expected "rows" to have ${GRID} arrays, got ${Array.isArray(r) ? r.length : typeof r}.`
+        );
       }
       for (let y = 0; y < GRID; y++) {
-        const r = rows[y];
-        if (!Array.isArray(r) || r.length !== GRID) {
+        const row = r[y];
+        if (!Array.isArray(row) || row.length !== GRID) {
           throw new Error(`Row ${y} must be an array of ${GRID} colors.`);
         }
         for (let x = 0; x < GRID; x++) {
-          cells[y][x] = normalizeCellColor(r[x]);
+          cells[y][x] = normalizeCellColor(row[x]);
         }
       }
       draw();
@@ -762,18 +825,28 @@ Rules:
         return;
       }
       setBusy(true);
-      appendChatBubble('meta', 'Generating grid JSON…');
+      appendChatBubble('meta', `Generating grid in ${STRIP_COUNT} strips (${STRIP_ROWS} rows each)…`);
       try {
-        const userText = `${GRID_JSON_INSTRUCTION}\n\nScene / style to draw:\n${desc}`;
-        const data = await geminiGenerate(
-          [{ role: 'user', parts: [{ text: userText }] }],
-          { responseMimeType: 'application/json' },
-          geminiRetryNotify()
-        );
-        const raw = extractCandidateText(data);
-        const parsed = parseModelJsonText(raw);
-        const rows = parsed.rows;
-        applyRowsToGrid(rows);
+        for (let y = 0; y < GRID; y++) {
+          for (let x = 0; x < GRID; x++) cells[y][x] = '#ffffff';
+        }
+        draw();
+        for (let s = 0; s < STRIP_COUNT; s++) {
+          appendChatBubble(
+            'meta',
+            `Strip ${s + 1}/${STRIP_COUNT} (rows ${s * STRIP_ROWS}–${s * STRIP_ROWS + STRIP_ROWS - 1})…`
+          );
+          const userText = stripPrompt(desc, s);
+          const data = await geminiGenerate(
+            [{ role: 'user', parts: [{ text: userText }] }],
+            { responseMimeType: 'application/json' },
+            geminiRetryNotify()
+          );
+          const raw = extractCandidateText(data);
+          const parsed = parseModelJsonText(raw);
+          const rows = extractRowsFromParsed(parsed);
+          applyPartialStripRows(rows, s * STRIP_ROWS);
+        }
         appendChatBubble('meta', 'Grid updated from Gemini JSON. Use “Download JSON” to save the file.');
       } catch (e) {
         appendChatBubble('error', e instanceof Error ? e.message : String(e));
