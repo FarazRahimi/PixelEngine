@@ -310,6 +310,8 @@
     const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
     /** Always-on-default; resolves to the newest Flash build for your API version. */
     const DEFAULT_GEMINI_MODEL = 'gemini-flash-latest';
+    /** Abort hung Gemini HTTP calls so the UI does not wait forever. */
+    const GEMINI_FETCH_TIMEOUT_MS = 120000;
 
     const GRID_JSON_INSTRUCTION = `You are assigning one HTML/CSS color per cell of a ${GRID}×${GRID} pixel canvas.
 Respond with ONLY valid JSON (no markdown fences, no commentary). Shape:
@@ -671,6 +673,23 @@ ${sceneDescription}`;
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
+    async function fetchWithTimeout(url, init, timeoutMs) {
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await fetch(url, { ...init, signal: controller.signal });
+      } catch (e) {
+        if (e && e.name === 'AbortError') {
+          throw new Error(
+            `Request timed out after ${Math.round(timeoutMs / 1000)}s. Check your network, then try again or switch model.`
+          );
+        }
+        throw e;
+      } finally {
+        clearTimeout(tid);
+      }
+    }
+
     /** Google sometimes returns 503 or a “high demand” message when capacity is tight. */
     function isTransientCapacityError(httpStatus, data, message) {
       const m = (message || '').toLowerCase();
@@ -790,7 +809,7 @@ ${sceneDescription}`;
     }
 
     async function geminiGenerate(contents, generationConfig, retryOptions = {}) {
-      const { onRetry } = retryOptions;
+      const { onRetry, quietRetries } = retryOptions;
       const key = getApiKey();
       if (!key) throw new Error('Add your Gemini API key first.');
 
@@ -810,11 +829,15 @@ ${sceneDescription}`;
       let lastMsg = '';
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
+        const res = await fetchWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          },
+          GEMINI_FETCH_TIMEOUT_MS
+        );
 
         const data = await res.json().catch(() => ({}));
         lastMsg = readGeminiError(data);
@@ -832,7 +855,9 @@ ${sceneDescription}`;
         }
 
         const delayMs = Math.min(32000, 2000 * Math.pow(2, attempt - 1));
-        if (typeof onRetry === 'function') onRetry(attempt + 1, maxAttempts, delayMs);
+        if (typeof onRetry === 'function' && !quietRetries) {
+          onRetry(attempt + 1, maxAttempts, delayMs);
+        }
         await sleep(delayMs);
       }
 
@@ -847,7 +872,13 @@ ${sceneDescription}`;
             `Model busy (high demand)—retry ${nextAttempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s…`
           );
         },
+        quietRetries: false,
       };
+    }
+
+    /** Same retries as chat, but no extra chat lines (10 strips × retries was spammy). */
+    function geminiRetryQuiet() {
+      return { quietRetries: true };
     }
 
     function setBusy(busy) {
@@ -864,6 +895,7 @@ ${sceneDescription}`;
         appendChatBubble('error', 'Describe the picture you want on the grid.');
         return;
       }
+      if (geminiBusy) return;
       setBusy(true);
       appendChatBubble('meta', `Generating grid in ${STRIP_COUNT} strips (${STRIP_ROWS} rows each)…`);
       try {
@@ -880,7 +912,7 @@ ${sceneDescription}`;
           const data = await geminiGenerate(
             [{ role: 'user', parts: [{ text: userText }] }],
             { responseMimeType: 'application/json' },
-            geminiRetryNotify()
+            geminiRetryQuiet()
           );
           const raw = extractCandidateText(data);
           const parsed = parseModelJsonText(raw);
@@ -898,6 +930,7 @@ ${sceneDescription}`;
     async function onChatSend() {
       const text = chatInput.value.trim();
       if (!text) return;
+      if (geminiBusy) return;
       chatInput.value = '';
       appendChatBubble('user', text);
       setBusy(true);
