@@ -293,6 +293,7 @@
       </div>
       <button type="button" class="secondary" id="btnClearChat">Clear chat</button>
       <p class="note">Grid generation asks Gemini for a single JSON object <code>{"rows":[[ "#rrggbb", …×100 ], …×100 ]}</code>. Large outputs need a capable model; if the response is cut off, try a simpler scene or another model.</p>
+      <p class="note">If the API says <strong>quota</strong> with <code>limit: 0</code> on <code>free_tier</code>, that project has <strong>no free quota</strong> for that model (not “you used the daily limit”). Try another model in the list, create a key in <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">AI Studio</a>, and ensure the <strong>Generative Language API</strong> is enabled for that Cloud project. See <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener">rate limits</a>.</p>
     </aside>
   </div>
 
@@ -521,8 +522,21 @@ Rules:
     }
 
     function readGeminiError(data) {
-      const msg = data?.error?.message || data?.error?.status || JSON.stringify(data?.error || data);
-      return typeof msg === 'string' ? msg : 'Request failed.';
+      const err = data?.error;
+      if (!err) return JSON.stringify(data || {}).slice(0, 2000);
+      let msg = err.message || err.status || 'Request failed.';
+      const details = err.details;
+      if (Array.isArray(details) && details.length) {
+        const bits = details
+          .map((d) => {
+            if (d['@type']?.includes('ErrorInfo') && d.reason) return d.reason + (d.metadata ? ' ' + JSON.stringify(d.metadata) : '');
+            if (typeof d === 'string') return d;
+            return JSON.stringify(d);
+          })
+          .filter(Boolean);
+        if (bits.length) msg += '\n' + bits.join('\n');
+      }
+      return msg;
     }
 
     function extractCandidateText(data) {
