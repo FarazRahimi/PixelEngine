@@ -271,7 +271,8 @@
       <label class="field">
         Model
         <select id="modelId">
-          <option value="gemini-2.5-flash" selected>gemini-2.5-flash</option>
+          <option value="gemini-flash-latest" selected>gemini-flash-latest</option>
+          <option value="gemini-2.5-flash">gemini-2.5-flash</option>
           <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
           <option value="gemini-2.0-flash">gemini-2.0-flash</option>
           <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite</option>
@@ -307,6 +308,8 @@
     const STRIP_COUNT = GRID / STRIP_ROWS;
     const STORAGE_KEY = 'pixelengine_gemini_api_key';
     const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+    /** Always-on-default; resolves to the newest Flash build for your API version. */
+    const DEFAULT_GEMINI_MODEL = 'gemini-flash-latest';
 
     const GRID_JSON_INSTRUCTION = `You are assigning one HTML/CSS color per cell of a ${GRID}×${GRID} pixel canvas.
 Respond with ONLY valid JSON (no markdown fences, no commentary). Shape:
@@ -326,10 +329,11 @@ Output ONLY valid JSON (no markdown, no commentary). Exact shape:
 {"rows":[ ... exactly ${STRIP_ROWS} arrays ... ]}
 
 Rules:
-- "rows" must contain exactly ${STRIP_ROWS} arrays (these are global rows ${start} through ${end}, top to bottom).
+- "rows" must contain exactly ${STRIP_ROWS} arrays (these are global rows ${start} through ${end}, top to bottom). Do not add extra rows.
 - Each inner array must have exactly ${GRID} strings.
 - Each string is a six-digit lowercase hex color: "#rrggbb".
 - Column 0 is left; align visually with a coherent scene across all strips.
+- Invent original pixel colors only—do not quote song lyrics, book passages, or recite recognizable copyrighted text in any field.
 
 Scene / style (same intent for every strip):
 ${sceneDescription}`;
@@ -545,17 +549,29 @@ ${sceneDescription}`;
       return rows;
     }
 
+    function normalizeColorRow(r, rowLabel) {
+      if (!Array.isArray(r)) {
+        throw new Error(`${rowLabel}: row must be an array of color strings.`);
+      }
+      if (r.length < GRID) {
+        throw new Error(`${rowLabel}: need ${GRID} colors, got ${r.length}.`);
+      }
+      const slice = r.length > GRID ? r.slice(0, GRID) : r;
+      return slice;
+    }
+
     function applyPartialStripRows(rows, startRow) {
-      if (!Array.isArray(rows) || rows.length !== STRIP_ROWS) {
+      if (!Array.isArray(rows) || rows.length === 0) {
+        throw new Error(`Strip must be a non-empty "rows" array.`);
+      }
+      const band = rows.length > STRIP_ROWS ? rows.slice(0, STRIP_ROWS) : rows;
+      if (band.length < STRIP_ROWS) {
         throw new Error(
-          `Expected strip to have ${STRIP_ROWS} row arrays, got ${Array.isArray(rows) ? rows.length : typeof rows}.`
+          `Strip has only ${rows.length} rows; need at least ${STRIP_ROWS}.`
         );
       }
       for (let dy = 0; dy < STRIP_ROWS; dy++) {
-        const r = rows[dy];
-        if (!Array.isArray(r) || r.length !== GRID) {
-          throw new Error(`Strip row ${dy} (global row ${startRow + dy}) must be an array of ${GRID} colors.`);
-        }
+        const r = normalizeColorRow(band[dy], `Strip row ${dy} (global ${startRow + dy})`);
         const gy = startRow + dy;
         for (let x = 0; x < GRID; x++) {
           cells[gy][x] = normalizeCellColor(r[x]);
@@ -656,6 +672,7 @@ ${sceneDescription}`;
     }
 
     const MODEL_PREFERRED_ORDER = [
+      'gemini-flash-latest',
       'gemini-2.5-flash',
       'gemini-2.0-flash',
       'gemini-2.5-flash-lite',
@@ -735,11 +752,23 @@ ${sceneDescription}`;
       const parts = c.content?.parts || [];
       const text = parts.map((p) => p.text || '').join('');
       if (!text) {
-        if (c.finishReason === 'MAX_TOKENS') {
+        const fr = c.finishReason;
+        if (fr === 'MAX_TOKENS') {
           throw new Error('Output was truncated (MAX_TOKENS). Try a simpler prompt or another model.');
         }
-        if (c.finishReason && c.finishReason !== 'STOP') {
-          throw new Error('No text in response (finish: ' + c.finishReason + ').');
+        if (fr === 'RECITATION') {
+          throw new Error(
+            'Response blocked (RECITATION): Gemini withheld output that might match copyrighted text. ' +
+              'Use an original, generic description (e.g. “pixel art sunset over hills”), avoid lyrics, quotes, or named franchises.'
+          );
+        }
+        if (fr === 'SAFETY' || fr === 'BLOCKLIST') {
+          throw new Error(
+            'Response blocked (SAFETY). Rephrase your prompt or avoid sensitive or disallowed content.'
+          );
+        }
+        if (fr && fr !== 'STOP') {
+          throw new Error('No text in response (finish: ' + fr + ').');
         }
         throw new Error('Empty model response.');
       }
@@ -754,7 +783,7 @@ ${sceneDescription}`;
       const key = getApiKey();
       if (!key) throw new Error('Add your Gemini API key first.');
 
-      const model = modelId.value.trim() || 'gemini-2.5-flash';
+      const model = modelId.value.trim() || DEFAULT_GEMINI_MODEL;
       const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
 
       const body = {
