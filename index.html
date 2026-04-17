@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PixelEngine — 100×100</title>
+  <style>
+    :root {
+      --bg: #1a1b26;
+      --panel: #24283b;
+      --text: #c0caf5;
+      --muted: #565f89;
+      --accent: #7aa2f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: system-ui, Segoe UI, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1rem;
+      gap: 1rem;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem 1rem;
+      background: var(--panel);
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      max-width: min(100%, 900px);
+    }
+    .toolbar label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+    }
+    input[type="color"] {
+      width: 44px;
+      height: 36px;
+      border: 2px solid var(--muted);
+      border-radius: 6px;
+      cursor: pointer;
+      padding: 0;
+      background: transparent;
+    }
+    input[type="text"] {
+      width: 8rem;
+      padding: 0.45rem 0.6rem;
+      border: 1px solid var(--muted);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-monospace, monospace;
+      font-size: 0.85rem;
+    }
+    input[type="text"]:invalid {
+      border-color: #f7768e;
+    }
+    button {
+      padding: 0.45rem 0.9rem;
+      border: none;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #1a1b26;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.875rem;
+    }
+    button:hover { filter: brightness(1.08); }
+    button.secondary {
+      background: var(--muted);
+      color: var(--text);
+    }
+    .hint {
+      font-size: 0.75rem;
+      color: var(--muted);
+      max-width: min(100%, 900px);
+      text-align: center;
+    }
+    .canvas-wrap {
+      border: 2px solid var(--panel);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      touch-action: none;
+    }
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      max-width: 100%;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>100×100 pixel grid</h1>
+  <div class="toolbar">
+    <label>
+      Swatch
+      <input type="color" id="colorPicker" value="#7aa2f7" />
+    </label>
+    <label>
+      HTML color
+      <input type="text" id="colorHex" value="#7aa2f7" spellcheck="false" maxlength="64" placeholder="#rgb or name" />
+    </label>
+    <button type="button" id="btnClear">Clear</button>
+    <button type="button" class="secondary" id="btnGrid">Toggle grid</button>
+  </div>
+  <p class="hint">Click and drag to paint. Any valid CSS color works in the text field (hex, <code>rgb()</code>, named colors).</p>
+  <div class="canvas-wrap">
+    <canvas id="board" width="800" height="800" aria-label="100 by 100 paint grid"></canvas>
+  </div>
+
+  <script>
+    const GRID = 100;
+    const CANVAS_SIZE = 800;
+    const CELL = CANVAS_SIZE / GRID;
+
+    const canvas = document.getElementById('board');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const colorPicker = document.getElementById('colorPicker');
+    const colorHex = document.getElementById('colorHex');
+    const btnClear = document.getElementById('btnClear');
+    const btnGrid = document.getElementById('btnGrid');
+
+    /** @type {string[][]} */
+    const cells = Array.from({ length: GRID }, () =>
+      Array.from({ length: GRID }, () => '#ffffff')
+    );
+
+    let showGrid = false;
+    let painting = false;
+    let currentColor = '#7aa2f7';
+    let gridRedrawPending = false;
+
+    function scheduleGridRedraw() {
+      if (gridRedrawPending) return;
+      gridRedrawPending = true;
+      requestAnimationFrame(() => {
+        gridRedrawPending = false;
+        draw();
+      });
+    }
+
+    function isValidCssColor(str) {
+      const s = str.trim();
+      if (!s) return false;
+      const probe = document.createElement('span');
+      probe.style.color = '';
+      probe.style.color = s;
+      return probe.style.color !== '';
+    }
+
+    function syncColorFromText() {
+      const raw = colorHex.value.trim();
+      if (!raw) return;
+      if (!isValidCssColor(raw)) {
+        colorHex.setCustomValidity('Invalid CSS color');
+        return;
+      }
+      colorHex.setCustomValidity('');
+      currentColor = raw;
+      try {
+        const probe = document.createElement('span');
+        probe.style.color = raw;
+        document.body.appendChild(probe);
+        const computed = getComputedStyle(probe).color;
+        document.body.removeChild(probe);
+        const m = computed.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        if (m) {
+          const r = (+m[1]).toString(16).padStart(2, '0');
+          const g = (+m[2]).toString(16).padStart(2, '0');
+          const b = (+m[3]).toString(16).padStart(2, '0');
+          colorPicker.value = `#${r}${g}${b}`;
+        }
+      } catch (_) { /* keep picker as-is */ }
+    }
+
+    function syncTextFromPicker() {
+      currentColor = colorPicker.value;
+      colorHex.value = colorPicker.value;
+      colorHex.setCustomValidity('');
+    }
+
+    function draw() {
+      for (let y = 0; y < GRID; y++) {
+        for (let x = 0; x < GRID; x++) {
+          ctx.fillStyle = cells[y][x];
+          ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
+        }
+      }
+      if (showGrid) {
+        ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= GRID; i++) {
+          const p = i * CELL;
+          ctx.beginPath();
+          ctx.moveTo(p, 0);
+          ctx.lineTo(p, CANVAS_SIZE);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(0, p);
+          ctx.lineTo(CANVAS_SIZE, p);
+          ctx.stroke();
+        }
+      }
+    }
+
+    function clientToCell(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const px = (clientX - rect.left) * scaleX;
+      const py = (clientY - rect.top) * scaleY;
+      const cx = Math.floor(px / CELL);
+      const cy = Math.floor(py / CELL);
+      if (cx < 0 || cx >= GRID || cy < 0 || cy >= GRID) return null;
+      return { cx, cy };
+    }
+
+    function paintAt(clientX, clientY) {
+      const cell = clientToCell(clientX, clientY);
+      if (!cell) return;
+      const { cx, cy } = cell;
+      if (cells[cy][cx] === currentColor) return;
+      cells[cy][cx] = currentColor;
+      if (showGrid) {
+        scheduleGridRedraw();
+      } else {
+        ctx.fillStyle = currentColor;
+        ctx.fillRect(cx * CELL, cy * CELL, CELL, CELL);
+      }
+    }
+
+    colorPicker.addEventListener('input', () => {
+      syncTextFromPicker();
+    });
+
+    colorHex.addEventListener('input', () => {
+      syncColorFromText();
+    });
+    colorHex.addEventListener('change', () => {
+      syncColorFromText();
+    });
+
+    btnClear.addEventListener('click', () => {
+      for (let y = 0; y < GRID; y++) {
+        for (let x = 0; x < GRID; x++) {
+          cells[y][x] = '#ffffff';
+        }
+      }
+      draw();
+    });
+
+    btnGrid.addEventListener('click', () => {
+      showGrid = !showGrid;
+      draw();
+    });
+
+    canvas.addEventListener('pointerdown', (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      painting = true;
+      paintAt(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!painting) return;
+      paintAt(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+      painting = false;
+      try {
+        canvas.releasePointerCapture(e.pointerId);
+      } catch (_) { /* not captured */ }
+    });
+
+    canvas.addEventListener('pointerleave', () => {
+      painting = false;
+    });
+
+    syncTextFromPicker();
+    draw();
+  </script>
+</body>
+</html>
