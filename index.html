@@ -230,7 +230,13 @@
       gap: 0.5rem;
       align-items: flex-start;
     }
-    .chat-actions textarea { flex: 1; }
+    .chat-actions textarea { flex: 1; min-width: 0; }
+    .chat-actions-btns {
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      flex-shrink: 0;
+    }
     .note {
       font-size: 0.7rem;
       color: var(--muted);
@@ -289,11 +295,14 @@
       <button type="button" id="btnDrawAI">Draw on grid (1 request)</button>
 
       <label class="field" style="color: var(--text); font-weight: 600; margin-top: 0.25rem;">Chat</label>
-      <p class="note" style="margin: 0 0 0.35rem;">No DALL-E or image URLs—PixelEngine only uses text replies and the scene rasterizer above.</p>
+      <p class="note" style="margin: 0 0 0.35rem;"><strong>Update canvas</strong> applies your message as an edit (new scene JSON). Use it for requests like “make the house purple.” <strong>Send</strong> is chat-only.</p>
       <div class="chat-log" id="chatLog" aria-live="polite"></div>
       <div class="chat-actions">
         <textarea id="chatInput" placeholder="Message Gemini…" rows="2"></textarea>
-        <button type="button" id="btnChatSend">Send</button>
+        <div class="chat-actions-btns">
+          <button type="button" id="btnChatSend">Send</button>
+          <button type="button" id="btnUpdateCanvas" title="Apply this message as an edit to the grid (uses API)">Update canvas</button>
+        </div>
       </div>
       <button type="button" class="secondary" id="btnClearChat">Clear chat</button>
       <p class="note"><strong>Draw on grid</strong> uses <strong>one</strong> API call. Gemini returns a small <strong>scene JSON</strong> (background + shapes); this app <strong>renders</strong> it to the 100×100 cells—no giant per-cell array from the model.</p>
@@ -342,11 +351,14 @@ User description:
 
     const CHAT_SYSTEM_INSTRUCTION = `You are helping PixelEngine: a static web page with a 100×100 paint grid in the browser.
 
-This app does NOT use DALL-E, Midjourney, or any image-generation API. There is no server that creates PNGs. "Draw on grid" sends one JSON "scene" (rectangles, circles, lines) to the client, which rasterizes it to cells. The toolbar has a local "Purple smiley" button with no API.
+This app does NOT use DALL-E or external image APIs. Drawing uses JSON "scenes" (rectangles, circles, lines) rasterized to the grid.
 
-Never output fake tool JSON (e.g. {"action":"dalle.text2im"}), action_input, or pretend to call external image tools. If asked for a purple smiley, say they can click "Purple smiley" or use "Draw on grid" with a short description, or paint by hand.
+When the user asks to change the picture (e.g. "make the house purple"), do NOT only give generic advice. Tell them clearly: use the **Update canvas** button with that same message—it sends the edit to Gemini and redraws the grid. You may add one short sentence of encouragement.
 
-Answer concisely in plain language.`;
+Never output fake tool JSON (e.g. {"action":"dalle.text2im"}). Answer concisely in plain language.`;
+
+    /** Last scene JSON from Draw on grid / presets; used for chat-driven edits. */
+    let lastSceneSpec = null;
 
     const canvas = document.getElementById('board');
     const ctx = canvas.getContext('2d', { alpha: false });
@@ -365,6 +377,7 @@ Answer concisely in plain language.`;
     const chatLog = document.getElementById('chatLog');
     const chatInput = document.getElementById('chatInput');
     const btnChatSend = document.getElementById('btnChatSend');
+    const btnUpdateCanvas = document.getElementById('btnUpdateCanvas');
     const btnClearChat = document.getElementById('btnClearChat');
 
     /** @type {string[][]} */
@@ -676,7 +689,36 @@ Answer concisely in plain language.`;
         else if (k === 'line') sceneDrawLine(op.line, cells);
         else throw new Error(`Unknown draw key "${k}" at index ${i}`);
       }
+      lastSceneSpec = JSON.parse(JSON.stringify(spec));
       draw();
+    }
+
+    function exportGridAsTinyPngBase64() {
+      const c = document.createElement('canvas');
+      c.width = GRID;
+      c.height = GRID;
+      const g = c.getContext('2d', { alpha: false });
+      for (let y = 0; y < GRID; y++) {
+        for (let x = 0; x < GRID; x++) {
+          g.fillStyle = cells[y][x];
+          g.fillRect(x, y, 1, 1);
+        }
+      }
+      const dataUrl = c.toDataURL('image/png');
+      const i = dataUrl.indexOf(',');
+      return i >= 0 ? dataUrl.slice(i + 1) : dataUrl;
+    }
+
+    function buildSceneEditPrompt(userText) {
+      let t = `You output PixelEngine scene JSON (version 1 only: "version", "background", "draw" array of {rect|circle|line}).
+
+The attached PNG is the CURRENT ${GRID}×${GRID} pixel grid (1 image pixel = 1 cell; origin top-left). It is the source of truth for what is on screen.
+`;
+      if (lastSceneSpec) {
+        t += `\nPrevious scene JSON (use as a hint for structure; if the image differs because the user painted, follow the image):\n${JSON.stringify(lastSceneSpec)}\n`;
+      }
+      t += `\nUser edit request: ${userText}\n\nReturn ONLY the complete scene JSON (full replacement) that matches the image as closely as possible, then applies the user's request. For color-only edits, change the relevant fill/stroke hex colors.`;
+      return t;
     }
 
     /** Classic round smiley: vibrant purple face, black eyes & smile—rendered locally (no Gemini). */
@@ -999,6 +1041,7 @@ Answer concisely in plain language.`;
       geminiBusy = busy;
       btnDrawAI.disabled = busy;
       btnChatSend.disabled = busy;
+      btnUpdateCanvas.disabled = busy;
       btnClearChat.disabled = busy;
       btnListModels.disabled = busy;
     }
@@ -1057,6 +1100,53 @@ Answer concisely in plain language.`;
       }
     }
 
+    async function onUpdateCanvas() {
+      const text = chatInput.value.trim();
+      if (!text) {
+        appendChatBubble('error', 'Type an edit first (e.g. “make the house purple”).');
+        return;
+      }
+      if (geminiBusy) return;
+      setBusy(true);
+      appendChatBubble('user', text);
+      appendChatBubble('meta', 'Applying edit (PNG snapshot + optional scene hint)…');
+      try {
+        const parts = [
+          {
+            inline_data: {
+              mime_type: 'image/png',
+              data: exportGridAsTinyPngBase64(),
+            },
+          },
+          { text: buildSceneEditPrompt(text) },
+        ];
+        const data = await geminiGenerate(
+          [{ role: 'user', parts }],
+          { responseMimeType: 'application/json' },
+          {
+            ...geminiRetryNotify(),
+            systemInstruction:
+              'Reply with exactly one JSON object: PixelEngine scene version 1 (background + draw). No markdown fences or commentary.',
+          }
+        );
+        const raw = extractCandidateText(data);
+        const parsed = parseModelJsonText(raw);
+        renderSceneFromSpec(parsed);
+        chatTurns.push({ role: 'user', text });
+        chatTurns.push({
+          role: 'model',
+          text: 'Applied your request to the canvas (scene JSON updated).',
+        });
+        appendChatBubble('model', 'Applied your request to the canvas (scene JSON updated).');
+        appendChatBubble('meta', 'Canvas redrawn. Use “Download JSON” to export cell colors.');
+        chatInput.value = '';
+      } catch (e) {
+        appendChatBubble('error', e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    }
+
     colorPicker.addEventListener('input', () => {
       syncTextFromPicker();
     });
@@ -1069,6 +1159,7 @@ Answer concisely in plain language.`;
     });
 
     btnClear.addEventListener('click', () => {
+      lastSceneSpec = null;
       for (let y = 0; y < GRID; y++) {
         for (let x = 0; x < GRID; x++) {
           cells[y][x] = '#ffffff';
@@ -1107,6 +1198,10 @@ Answer concisely in plain language.`;
 
     btnChatSend.addEventListener('click', () => {
       void onChatSend();
+    });
+
+    btnUpdateCanvas.addEventListener('click', () => {
+      void onUpdateCanvas();
     });
 
     chatInput.addEventListener('keydown', (e) => {
