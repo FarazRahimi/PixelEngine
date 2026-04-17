@@ -271,14 +271,15 @@
       <label class="field">
         Model
         <select id="modelId">
-          <option value="gemini-1.5-flash" selected>gemini-1.5-flash</option>
+          <option value="gemini-2.5-flash" selected>gemini-2.5-flash</option>
+          <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
           <option value="gemini-2.0-flash">gemini-2.0-flash</option>
           <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite</option>
-          <option value="gemini-1.5-pro">gemini-1.5-pro</option>
         </select>
       </label>
       <div class="row-btns">
         <button type="button" class="secondary" id="btnSaveKey">Save key</button>
+        <button type="button" class="secondary" id="btnListModels" title="Calls ListModels for your API key">List models</button>
       </div>
 
       <label class="field" style="color: var(--text); font-weight: 600;">Picture for grid</label>
@@ -293,7 +294,7 @@
       </div>
       <button type="button" class="secondary" id="btnClearChat">Clear chat</button>
       <p class="note">Grid generation asks Gemini for a single JSON object <code>{"rows":[[ "#rrggbb", …×100 ], …×100 ]}</code>. Large outputs need a capable model; if the response is cut off, try a simpler scene or another model.</p>
-      <p class="note">If the API says <strong>quota</strong> with <code>limit: 0</code> on <code>free_tier</code>, that project has <strong>no free quota</strong> for that model (not “you used the daily limit”). Try another model in the list, create a key in <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">AI Studio</a>, and ensure the <strong>Generative Language API</strong> is enabled for that Cloud project. See <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener">rate limits</a>.</p>
+      <p class="note">Older IDs like <code>gemini-1.5-flash</code> are removed from the API—use <strong>List models</strong> to see what your key supports. If the API says <strong>quota</strong> with <code>limit: 0</code> on <code>free_tier</code>, try another model, create a key in <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">AI Studio</a>, and ensure the <strong>Generative Language API</strong> is enabled. See <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener">rate limits</a>.</p>
     </aside>
   </div>
 
@@ -323,6 +324,7 @@ Rules:
     const apiKeyInput = document.getElementById('apiKey');
     const modelId = document.getElementById('modelId');
     const btnSaveKey = document.getElementById('btnSaveKey');
+    const btnListModels = document.getElementById('btnListModels');
     const picturePrompt = document.getElementById('picturePrompt');
     const btnDrawAI = document.getElementById('btnDrawAI');
     const chatLog = document.getElementById('chatLog');
@@ -460,13 +462,23 @@ Rules:
       } catch (_) { /* private mode */ }
     }
 
-    function saveStoredKey() {
+    async function saveStoredKey() {
       const k = getApiKey();
       try {
         if (k) localStorage.setItem(STORAGE_KEY, k);
         else localStorage.removeItem(STORAGE_KEY);
       } catch (_) { /* ignore */ }
       appendChatBubble('meta', k ? 'API key saved in this browser.' : 'API key cleared from storage.');
+      if (k) {
+        setBusy(true);
+        try {
+          await refreshModelListFromApi({ silent: false });
+        } catch (e) {
+          appendChatBubble('error', e instanceof Error ? e.message : String(e));
+        } finally {
+          setBusy(false);
+        }
+      }
     }
 
     function appendChatBubble(kind, text) {
@@ -556,9 +568,79 @@ Rules:
       }
       if (sawQuotaFailure || /limit:\s*0/i.test(msg)) {
         msg +=
-          '\n\nTip: Free-tier quota for this model may be unset (limit 0). Try another model above (e.g. gemini-1.5-flash), or in Google Cloud open APIs → Generative Language API → Quotas for your project.';
+          '\n\nTip: Free-tier quota for this model may be unset (limit 0). Try another model (use List models), or in Google Cloud open APIs → Generative Language API → Quotas for your project.';
       }
       return msg;
+    }
+
+    const MODEL_PREFERRED_ORDER = [
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'gemini-2.5-flash-lite',
+      'gemini-2.0-flash-lite',
+      'gemini-2.5-pro',
+      'gemini-2.0-pro',
+    ];
+
+    function sortModelIds(ids) {
+      const copy = [...ids];
+      copy.sort((a, b) => {
+        const ia = MODEL_PREFERRED_ORDER.indexOf(a);
+        const ib = MODEL_PREFERRED_ORDER.indexOf(b);
+        if (ia === -1 && ib === -1) return a.localeCompare(b);
+        if (ia === -1) return 1;
+        if (ib === -1) return -1;
+        return ia - ib;
+      });
+      return copy;
+    }
+
+    function applyModelList(ids) {
+      if (!ids.length) throw new Error('No models returned. Check your API key and Generative Language API.');
+      const ordered = sortModelIds(ids);
+      const prev = modelId.value;
+      modelId.innerHTML = '';
+      for (const id of ordered) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        opt.textContent = id;
+        modelId.appendChild(opt);
+      }
+      if (ordered.includes(prev)) modelId.value = prev;
+      else modelId.value = ordered[0];
+    }
+
+    async function fetchGeminiModelIds() {
+      const key = getApiKey();
+      if (!key) throw new Error('Add your Gemini API key first.');
+      const out = [];
+      let pageToken = '';
+      for (;;) {
+        let url = `${GEMINI_BASE}/models?pageSize=50&key=${encodeURIComponent(key)}`;
+        if (pageToken) url += `&pageToken=${encodeURIComponent(pageToken)}`;
+        const res = await fetch(url);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(readGeminiError(data));
+        for (const m of data.models || []) {
+          const id = String(m.name || '').replace(/^models\//, '');
+          if (!id.startsWith('gemini')) continue;
+          if (m.supportedGenerationMethods?.includes('generateContent')) {
+            out.push(id);
+          }
+        }
+        pageToken = data.nextPageToken || '';
+        if (!pageToken) break;
+      }
+      return [...new Set(out)];
+    }
+
+    async function refreshModelListFromApi({ silent = false } = {}) {
+      const ids = await fetchGeminiModelIds();
+      applyModelList(ids);
+      if (!silent) {
+        appendChatBubble('meta', `Loaded ${ids.length} models (generateContent). Pick one above.`);
+      }
+      return ids.length;
     }
 
     function extractCandidateText(data) {
@@ -589,7 +671,7 @@ Rules:
       const key = getApiKey();
       if (!key) throw new Error('Add your Gemini API key first.');
 
-      const model = modelId.value.trim() || 'gemini-1.5-flash';
+      const model = modelId.value.trim() || 'gemini-2.5-flash';
       const url = `${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
 
       const body = {
@@ -618,6 +700,7 @@ Rules:
       btnDrawAI.disabled = busy;
       btnChatSend.disabled = busy;
       btnClearChat.disabled = busy;
+      btnListModels.disabled = busy;
     }
 
     async function onDrawAI() {
@@ -698,7 +781,16 @@ Rules:
       downloadJson('pixelengine-grid.json', gridToJsonObject());
     });
 
-    btnSaveKey.addEventListener('click', saveStoredKey);
+    btnSaveKey.addEventListener('click', () => {
+      void saveStoredKey();
+    });
+
+    btnListModels.addEventListener('click', () => {
+      setBusy(true);
+      void refreshModelListFromApi({ silent: false }).catch((e) => {
+        appendChatBubble('error', e instanceof Error ? e.message : String(e));
+      }).finally(() => setBusy(false));
+    });
 
     btnDrawAI.addEventListener('click', () => {
       void onDrawAI();
@@ -745,6 +837,11 @@ Rules:
     loadStoredKey();
     syncTextFromPicker();
     draw();
+    if (getApiKey()) {
+      void refreshModelListFromApi({ silent: true }).catch(() => {
+        /* keep static fallback options */
+      });
+    }
   </script>
 </body>
 </html>
