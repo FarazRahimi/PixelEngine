@@ -309,7 +309,7 @@
         </div>
       </div>
       <button type="button" class="secondary" id="btnClearChat">Clear chat</button>
-      <p class="note"><strong>Draw (scene JSON)</strong> — fast vector-like scenes. <strong>AI image → grid</strong> — Gemini returns an image (lighting/shadows); the app samples to 100×100 hex colors. Default tries <code>gemini-2.5-flash-image</code> first; use <strong>List models</strong> to see what your key supports. Image models often show <code>limit: 0</code> on the free tier—billing may be required. <a href="https://ai.google.dev/gemini-api/docs/image-generation" target="_blank" rel="noopener">Image generation docs</a>.</p>
+      <p class="note"><strong>Draw (scene JSON)</strong> — fast vector-like scenes. <strong>AI image → grid</strong> — Gemini returns an image (lighting/shadows); the app samples to 100×100 hex colors. Default tries <code>gemini-2.5-flash-image</code>. <a href="https://aistudio.google.com" target="_blank" rel="noopener">Google AI Studio</a> offers a <strong>free tier</strong> for programmatic image generation with Gemini 2.5 Flash Image for many accounts (no payment required for that tier). If you see <code>limit: 0</code>, try a key from AI Studio, pick a project with quota enabled, or use <strong>List models</strong>. <a href="https://ai.google.dev/gemini-api/docs/image-generation" target="_blank" rel="noopener">Image generation docs</a>.</p>
       <p class="note">Older IDs like <code>gemini-1.5-flash</code> are removed from the API—use <strong>List models</strong> to see what your key supports. If the API says <strong>quota</strong> with <code>limit: 0</code> on <code>free_tier</code>, try another model, create a key in <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">AI Studio</a>, and ensure the <strong>Generative Language API</strong> is enabled. See <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener">rate limits</a>.</p>
     </aside>
   </div>
@@ -840,10 +840,10 @@ The attached PNG is the CURRENT ${GRID}×${GRID} pixel grid (1 image pixel = 1 c
       }
       if (sawQuotaFailure || /limit:\s*0/i.test(msg)) {
         msg +=
-          '\n\nTip: Free-tier quota for this model may be unset (limit 0). Try another model (use List models), enable billing, or open Google Cloud → Generative Language API → Quotas.';
+          '\n\nTip: Quota may be unset (limit 0) for this Cloud project or model. Try another model (List models), a key from AI Studio (https://aistudio.google.com/apikey), or Google Cloud → Generative Language API → Quotas.';
         if (/image|imagen/i.test(msg) || /flash-image|Image/i.test(quotaModel + msg)) {
           msg +=
-            '\n\nImage-generation models often have no free quota. Use **Draw (scene JSON)** for a no-image fallback, or upgrade the project billing for image models.';
+            '\n\nGoogle AI Studio often includes a free tier for Gemini 2.5 Flash Image—no payment required for eligible usage. If you still see limit 0, the API key’s project may not have image quota enabled yet; try a new AI Studio key or check quotas. You can use **Draw (scene JSON)** without image generation as a fallback.';
         }
       }
       if (/high demand|spikes in demand|temporarily overloaded|try again later/i.test(msg)) {
