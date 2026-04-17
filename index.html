@@ -279,7 +279,7 @@
         Model
         <select id="modelId">
           <option value="gemini-flash-latest" selected>gemini-flash-latest</option>
-          <option value="gemini-2.0-flash-preview-image-generation">gemini-2.0-flash-preview-image-generation (images)</option>
+          <option value="gemini-2.5-flash-image">gemini-2.5-flash-image (images)</option>
           <option value="gemini-2.5-flash">gemini-2.5-flash</option>
           <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
           <option value="gemini-2.0-flash">gemini-2.0-flash</option>
@@ -309,7 +309,7 @@
         </div>
       </div>
       <button type="button" class="secondary" id="btnClearChat">Clear chat</button>
-      <p class="note"><strong>Draw (scene JSON)</strong> — fast vector-like scenes. <strong>AI image → grid</strong> — Gemini draws a full image (lighting, shadows); the app samples it to 100×100 hex colors. Use an <a href="https://ai.google.dev/gemini-api/docs/image-generation" target="_blank" rel="noopener">image-capable model</a> (default: <code>gemini-2.0-flash-preview-image-generation</code>). <strong>Update canvas</strong> still edits via PNG + JSON.</p>
+      <p class="note"><strong>Draw (scene JSON)</strong> — fast vector-like scenes. <strong>AI image → grid</strong> — Gemini returns an image (lighting/shadows); the app samples to 100×100 hex colors. Default tries <code>gemini-2.5-flash-image</code> first; use <strong>List models</strong> to see what your key supports. Image models often show <code>limit: 0</code> on the free tier—billing may be required. <a href="https://ai.google.dev/gemini-api/docs/image-generation" target="_blank" rel="noopener">Image generation docs</a>.</p>
       <p class="note">Older IDs like <code>gemini-1.5-flash</code> are removed from the API—use <strong>List models</strong> to see what your key supports. If the API says <strong>quota</strong> with <code>limit: 0</code> on <code>free_tier</code>, try another model, create a key in <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">AI Studio</a>, and ensure the <strong>Generative Language API</strong> is enabled. See <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener">rate limits</a>.</p>
     </aside>
   </div>
@@ -353,8 +353,12 @@ Use 6-digit lowercase hex colors. Build the scene with a few to many shapes—en
 User description:
 `;
 
-    /** Model that returns IMAGE parts from generateContent (see Google image generation docs). */
-    const DEFAULT_IMAGE_GEN_MODEL = 'gemini-2.0-flash-preview-image-generation';
+    /** Tried in order when “AI image → grid” runs (first match from Model dropdown if its id contains “image”). */
+    const IMAGE_GEN_MODEL_FALLBACKS = [
+      'gemini-2.5-flash-image',
+      'gemini-2.5-flash-preview-image',
+      'gemini-2.0-flash-preview-image-generation',
+    ];
 
     const IMAGE_TO_GRID_PROMPT = `Generate ONE square image (1:1 aspect ratio). Aim for the best visual quality you can within a single frame: clear composition, convincing lighting, soft shadows, subtle gradients, material separation, and depth—so the picture still reads well when downsampled.
 
@@ -836,7 +840,11 @@ The attached PNG is the CURRENT ${GRID}×${GRID} pixel grid (1 image pixel = 1 c
       }
       if (sawQuotaFailure || /limit:\s*0/i.test(msg)) {
         msg +=
-          '\n\nTip: Free-tier quota for this model may be unset (limit 0). Try another model (use List models), or in Google Cloud open APIs → Generative Language API → Quotas for your project.';
+          '\n\nTip: Free-tier quota for this model may be unset (limit 0). Try another model (use List models), enable billing, or open Google Cloud → Generative Language API → Quotas.';
+        if (/image|imagen/i.test(msg) || /flash-image|Image/i.test(quotaModel + msg)) {
+          msg +=
+            '\n\nImage-generation models often have no free quota. Use **Draw (scene JSON)** for a no-image fallback, or upgrade the project billing for image models.';
+        }
       }
       if (/high demand|spikes in demand|temporarily overloaded|try again later/i.test(msg)) {
         msg +=
@@ -879,7 +887,7 @@ The attached PNG is the CURRENT ${GRID}×${GRID} pixel grid (1 image pixel = 1 c
 
     const MODEL_PREFERRED_ORDER = [
       'gemini-flash-latest',
-      'gemini-2.0-flash-preview-image-generation',
+      'gemini-2.5-flash-image',
       'gemini-2.5-flash',
       'gemini-2.0-flash',
       'gemini-2.5-flash-lite',
@@ -1116,6 +1124,22 @@ The attached PNG is the CURRENT ${GRID}×${GRID} pixel grid (1 image pixel = 1 c
       btnListModels.disabled = busy;
     }
 
+    function isModelNotFoundError(message) {
+      return /not found for API version|not supported for generateContent|is not found|404/i.test(
+        message || ''
+      );
+    }
+
+    function buildImageModelTryList() {
+      const sel = modelId.value.trim();
+      const list = [];
+      if (/image|imagen/i.test(sel)) list.push(sel);
+      for (const m of IMAGE_GEN_MODEL_FALLBACKS) {
+        if (!list.includes(m)) list.push(m);
+      }
+      return list;
+    }
+
     async function onDrawAIImage() {
       const desc = picturePrompt.value.trim();
       if (!desc) {
@@ -1128,30 +1152,45 @@ The attached PNG is the CURRENT ${GRID}×${GRID} pixel grid (1 image pixel = 1 c
         'meta',
         'Generating image with Gemini (lighting/shadows), then sampling to 100×100 HTML colors…'
       );
+      const tryList = buildImageModelTryList();
       try {
-        const sel = modelId.value.trim();
-        const imageModel = /image|imagen/i.test(sel) ? sel : DEFAULT_IMAGE_GEN_MODEL;
-        const data = await geminiGenerate(
-          [{ role: 'user', parts: [{ text: IMAGE_TO_GRID_PROMPT + desc }] }],
-          {
-            responseModalities: ['TEXT', 'IMAGE'],
-          },
-          {
-            ...geminiRetryNotify(),
-            modelOverride: imageModel,
+        for (let i = 0; i < tryList.length; i++) {
+          const imageModel = tryList[i];
+          if (i > 0) {
+            appendChatBubble('meta', `Trying fallback model: ${imageModel}…`);
           }
-        );
-        const part = extractInlineImagePart(data);
-        if (!part) {
-          throw new Error(
-            'No image in the API response. Choose an image-capable model (e.g. gemini-2.0-flash-preview-image-generation) or check ai.google.dev image-generation docs for your key.'
-          );
+          try {
+            const data = await geminiGenerate(
+              [{ role: 'user', parts: [{ text: IMAGE_TO_GRID_PROMPT + desc }] }],
+              {
+                responseModalities: ['TEXT', 'IMAGE'],
+              },
+              {
+                ...geminiRetryNotify(),
+                modelOverride: imageModel,
+              }
+            );
+            const part = extractInlineImagePart(data);
+            if (!part) {
+              throw new Error(
+                'No image in this response. Confirm the model supports IMAGE output (see image-generation docs).'
+              );
+            }
+            await applyImagePartToGrid(part);
+            appendChatBubble(
+              'meta',
+              'Grid updated from generated image. Refine with “Update canvas” or export JSON.'
+            );
+            return;
+          } catch (e) {
+            lastErr = e instanceof Error ? e : new Error(String(e));
+            const msg = lastErr.message;
+            if (isModelNotFoundError(msg) && i < tryList.length - 1) {
+              continue;
+            }
+            throw lastErr;
+          }
         }
-        await applyImagePartToGrid(part);
-        appendChatBubble(
-          'meta',
-          'Grid updated from generated image. Refine with “Update canvas” or export JSON.'
-        );
       } catch (e) {
         appendChatBubble('error', e instanceof Error ? e.message : String(e));
       } finally {
