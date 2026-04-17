@@ -309,7 +309,7 @@
         </div>
       </div>
       <button type="button" class="secondary" id="btnClearChat">Clear chat</button>
-      <p class="note"><strong>Draw (scene JSON)</strong> — fast vector-like scenes. <strong>AI image → grid</strong> — Gemini returns an image (lighting/shadows); the app samples to 100×100 hex colors. Default tries <code>gemini-2.5-flash-image</code>. <a href="https://aistudio.google.com" target="_blank" rel="noopener">Google AI Studio</a> offers a <strong>free tier</strong> for programmatic image generation with Gemini 2.5 Flash Image for many accounts (no payment required for that tier). If you see <code>limit: 0</code>, try a key from AI Studio, pick a project with quota enabled, or use <strong>List models</strong>. <a href="https://ai.google.dev/gemini-api/docs/image-generation" target="_blank" rel="noopener">Image generation docs</a>.</p>
+      <p class="note"><strong>Draw (scene JSON)</strong> — fast vector-like scenes. <strong>AI image → grid</strong> — Gemini returns an image (lighting/shadows); the app samples to 100×100 hex colors. Default tries <code>gemini-2.5-flash-image</code>. <a href="https://aistudio.google.com" target="_blank" rel="noopener">Google AI Studio</a> offers a <strong>free tier</strong> for programmatic image generation with Gemini 2.5 Flash Image for many accounts (no payment required for that tier). If <code>gemini-2.5-flash-preview-image</code> shows <code>limit: 0</code>, try <code>gemini-2.5-flash-image</code> (no “preview”)—the app tries that first. Otherwise use a fresh AI Studio key or <strong>List models</strong>. <a href="https://ai.google.dev/gemini-api/docs/image-generation" target="_blank" rel="noopener">Image generation docs</a>.</p>
       <p class="note">Older IDs like <code>gemini-1.5-flash</code> are removed from the API—use <strong>List models</strong> to see what your key supports. If the API says <strong>quota</strong> with <code>limit: 0</code> on <code>free_tier</code>, try another model, create a key in <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">AI Studio</a>, and ensure the <strong>Generative Language API</strong> is enabled. See <a href="https://ai.google.dev/gemini-api/docs/rate-limits" target="_blank" rel="noopener">rate limits</a>.</p>
     </aside>
   </div>
@@ -353,10 +353,8 @@ Use 6-digit lowercase hex colors. Build the scene with a few to many shapes—en
 User description:
 `;
 
-    /** Tried in order when “AI image → grid” runs (first match from Model dropdown if its id contains “image”). */
+    /** Extra models tried after gemini-2.5-flash-image. Omit *preview-image* SKUs when possible—they often show free_tier limit:0 while gemini-2.5-flash-image works. */
     const IMAGE_GEN_MODEL_FALLBACKS = [
-      'gemini-2.5-flash-image',
-      'gemini-2.5-flash-preview-image',
       'gemini-2.0-flash-preview-image-generation',
     ];
 
@@ -1130,13 +1128,21 @@ The attached PNG is the CURRENT ${GRID}×${GRID} pixel grid (1 image pixel = 1 c
       );
     }
 
+    /** Free-tier quota unset (limit 0) — try another image model id. */
+    function isFreeTierQuotaUnsetError(message) {
+      const m = message || '';
+      return /limit:\s*0/i.test(m) && /free_tier|free tier|Quota exceeded|quota exceeded/i.test(m);
+    }
+
     function buildImageModelTryList() {
       const sel = modelId.value.trim();
       const list = [];
-      if (/image|imagen/i.test(sel)) list.push(sel);
-      for (const m of IMAGE_GEN_MODEL_FALLBACKS) {
-        if (!list.includes(m)) list.push(m);
-      }
+      const add = (id) => {
+        if (id && !list.includes(id)) list.push(id);
+      };
+      add('gemini-2.5-flash-image');
+      if (/image|imagen/i.test(sel)) add(sel);
+      for (const id of IMAGE_GEN_MODEL_FALLBACKS) add(id);
       return list;
     }
 
@@ -1183,12 +1189,19 @@ The attached PNG is the CURRENT ${GRID}×${GRID} pixel grid (1 image pixel = 1 c
             );
             return;
           } catch (e) {
-            lastErr = e instanceof Error ? e : new Error(String(e));
-            const msg = lastErr.message;
-            if (isModelNotFoundError(msg) && i < tryList.length - 1) {
+            const err = e instanceof Error ? e : new Error(String(e));
+            const msg = err.message;
+            const tryNext =
+              i < tryList.length - 1 &&
+              (isModelNotFoundError(msg) || isFreeTierQuotaUnsetError(msg));
+            if (tryNext) {
+              appendChatBubble(
+                'meta',
+                `Trying next model (${isFreeTierQuotaUnsetError(msg) ? 'quota/limit 0 on this SKU' : 'model unavailable'})…`
+              );
               continue;
             }
-            throw lastErr;
+            throw err;
           }
         }
       } catch (e) {
