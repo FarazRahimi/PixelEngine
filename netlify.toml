@@ -1,4 +1,19 @@
-# Static app: no bundler. Site root is the publish directory.
+# Vite build → dist/; classic single-page app copied from public/classic.html
 [build]
-  publish = "."
-  command = "echo Static site"
+  publish = "dist"
+  command = "npm ci && npm run build"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-store"
+
+[[headers]]
+  for = "/"
+  [headers.values]
+    Cache-Control = "no-store"
+
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+    Cache-Control = "no-store"
